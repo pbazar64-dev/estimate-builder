@@ -30,7 +30,7 @@ estimate-builder/
 │       │   │   ├── auth/          # OAuth B24, сессии, RBAC guards
 │       │   │   ├── estimates/     # CRUD, черновик, реестр
 │       │   │   ├── versions/      # версии, слепки, diff, откат
-│       │   │   ├── calc/          # CalcEngine (формулы, итоги, маржа)
+│       │   │   ├── calc/          # CalcEngine (формулы, итоги)
 │       │   │   ├── catalog/       # каталог типовых работ
 │       │   │   ├── approval/      # маршруты, шаги, история
 │       │   │   ├── documents/     # генерация DOCX/PDF/XLSX

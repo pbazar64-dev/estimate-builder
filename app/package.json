@@ -1,0 +1,13 @@
+{
+  "name": "estimate-builder-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Конструктор смет, КП и договоров для Битрикс24 (Ава Тетис)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

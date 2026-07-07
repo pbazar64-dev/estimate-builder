@@ -77,7 +77,7 @@ REST API (JSON) между SPA и бэкендом. База: `/api/v1`. Аут�
 ## 7.9. Аналитика / CRM
 | Метод | Назначение |
 |---|---|
-| `GET /analytics/overview` | Сводка (статусы, ср. сумма, ср. маржа, скорость согл.) |
+| `GET /analytics/overview` | Сводка (статусы, ср. сумма, скорость согл.) |
 | `GET /analytics/services-top` | Топ услуг |
 | `GET /analytics/timeline` | Динамика по месяцам |
 | `GET /crm/deals/{dealId}/estimates` | Сметы по сделке (для виджета) |
@@ -99,8 +99,7 @@ interface EstimateLineDto {
 }
 // Итоги пересчёта
 interface RecalcResultDto {
-  totalAmount: number; totalCost: number; margin: number;
-  durationDays: number;
+  totalAmount: number; durationDays: number;
   stageTotals: { stage: string; amount: number; hoursClient: number }[];
 }
 // Решение согласования

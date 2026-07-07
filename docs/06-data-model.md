@@ -57,7 +57,6 @@ AppUser ──маппинг──> Bitrix24 user + Role
 | status | text enum | draft/on_approval/approved/rejected/kp_ready/contract_ready/signed/archived |
 | current_version_id | uuid FK→estimate_version | |
 | total_amount | numeric(14,2) | кэш суммы текущей версии |
-| margin | numeric(5,4) | кэш маржи |
 | is_archived | bool | |
 | created_by / updated_by | bigint | |
 | created_at / updated_at | timestamptz | |
@@ -74,8 +73,6 @@ AppUser ──маппинг──> Bitrix24 user + Role
 | country_id | uuid | зафиксированная страна |
 | hourly_rate | numeric(12,2) | **зафиксированная ставка (снапшот)** |
 | total_amount | numeric(14,2) | сумма версии |
-| total_cost | numeric(14,2) | себестоимость (по часам исполнителя) |
-| margin | numeric(5,4) | маржа версии |
 | duration_days | int | срок реализации |
 | snapshot | jsonb | полный слепок дерева + этапов + платежей |
 | created_at | timestamptz | |
@@ -190,6 +187,6 @@ CREATE INDEX idx_audit_entity           ON audit_log(entity_type, entity_id, cre
 - `estimate.deal_id` — **NOT NULL** (обязательная связь со сделкой).
 - Каскад: удаление сметы → мягкое (архив); физически версии не удаляются.
 - `estimate_version` — **иммутабельна** после создания (append-only).
-- Сумма/маржа сметы = кэш из `current_version`; пересчёт — на бэкенде
+- Сумма сметы = кэш из `current_version`; пересчёт — на бэкенде
   (CalcEngine), клиент лишь предвычисляет для UX.
 - Валюта/ставка версии фиксируются в момент сохранения (историческая точность).
