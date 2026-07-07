@@ -97,25 +97,61 @@ async function viewRegistry() {
 }
 
 /* ---------- Мастер создания ---------- */
-function openWizard() {
+async function openWizard() {
   let sel = App.boot.countries[0].id;
+  let companies = { source: 'demo', items: [] };
+  try { companies = await api('/crm/companies'); } catch (e) {}
   const m = document.createElement('div'); m.className = 'modal';
   const cnts = () => App.boot.countries.map(c => `<div class="cnt ${c.id === sel ? 'on' : ''}" data-id="${c.id}">
     <div class="fl">${esc(c.name)}</div><div class="cur">${esc(c.currency)}</div>
     <div class="rate tnum">${fmt(c.rate)}<small> /ч</small></div></div>`).join('');
+  const companyOptions = ['<option value="">— выберите компанию —</option>']
+    .concat((companies.items || []).map(c => `<option value="${esc(c.id)}" data-title="${esc(c.title)}">${esc(c.title)}</option>`)).join('');
+  const srcNote = companies.source === 'portal'
+    ? '<span class="tag t-ok" style="margin-left:8px">портал Битрикс24</span>'
+    : '<span class="tag t-warn" style="margin-left:8px">демо-данные</span>';
   m.innerHTML = `<div class="box"><h3>Новая смета</h3>
     <div class="field"><label>Название</label><input id="w_title" placeholder="Внедрение Битрикс24 — …"></div>
-    <div class="field"><label>Компания</label><input id="w_company" placeholder="ООО «…»"></div>
-    <div class="field"><label>ID сделки CRM</label><input id="w_deal" placeholder="7781"></div>
+    <div class="field"><label>Компания ${srcNote}</label><select id="w_company">${companyOptions}</select></div>
+    <div class="field"><label>Сделка</label><select id="w_deal" disabled><option value="">— сначала выберите компанию —</option></select></div>
     <div class="field"><label>Страна расчёта · ставка часа</label><div class="countries" id="w_cnts">${cnts()}</div></div>
     <div class="acts"><button class="btn ghost" id="w_cancel">Отмена</button><button class="btn prim" id="w_ok">Создать →</button></div></div>`;
   document.body.appendChild(m);
   const rebind = () => m.querySelectorAll('.cnt').forEach(el => el.onclick = () => { sel = el.dataset.id; $('#w_cnts').innerHTML = cnts(); rebind(); });
   rebind();
+  // Каскад: компания → сделки
+  const dealSel = $('#w_deal');
+  $('#w_company').onchange = async (ev) => {
+    const cid = ev.target.value;
+    if (!$('#w_title').value) {
+      const opt = ev.target.selectedOptions[0];
+      // авто-подставим название по компании, если пусто
+    }
+    if (!cid) { dealSel.innerHTML = '<option value="">— сначала выберите компанию —</option>'; dealSel.disabled = true; return; }
+    dealSel.disabled = true; dealSel.innerHTML = '<option>Загрузка…</option>';
+    let deals = { items: [] };
+    try { deals = await api('/crm/deals?companyId=' + encodeURIComponent(cid)); } catch (e) {}
+    const opts = ['<option value="">— выберите сделку —</option>']
+      .concat((deals.items || []).map(d => `<option value="${esc(d.id)}" data-title="${esc(d.title)}">${esc(d.title)}</option>`));
+    if ((deals.items || []).length === 0) opts.push('<option value="" disabled>у компании нет сделок</option>');
+    dealSel.innerHTML = opts.join(''); dealSel.disabled = false;
+  };
   $('#w_cancel').onclick = () => m.remove();
   m.onclick = (e) => { if (e.target === m) m.remove(); };
   $('#w_ok').onclick = async () => {
-    const body = { title: $('#w_title').value || 'Новая смета', company: $('#w_company').value, dealId: Number($('#w_deal').value) || null, countryId: sel };
+    const cOpt = $('#w_company').selectedOptions[0];
+    const dOpt = $('#w_deal').selectedOptions[0];
+    const companyTitle = cOpt ? (cOpt.dataset.title || '') : '';
+    const dealTitle = dOpt ? (dOpt.dataset.title || '') : '';
+    const title = $('#w_title').value || (dealTitle || ('Смета — ' + companyTitle)) || 'Новая смета';
+    const body = {
+      title,
+      companyId: $('#w_company').value ? Number($('#w_company').value) : null,
+      company: companyTitle,
+      dealId: $('#w_deal').value ? Number($('#w_deal').value) : null,
+      dealTitle,
+      countryId: sel,
+    };
     const e = await api('/estimates', { method: 'POST', body: JSON.stringify(body) });
     m.remove(); toast('Смета создана'); location.hash = '#/edit/' + e.id;
   };
@@ -141,7 +177,7 @@ async function viewCard(id) {
     <h1>${esc(e.title)}</h1></div>${statusTag(e.status)}</div>
     <div class="grid2">
       <div class="info"><div class="kv">
-        <div class="cell"><div class="k">Сделка</div><div class="val">${e.dealId ? '#' + e.dealId : '—'}</div></div>
+        <div class="cell"><div class="k">Сделка</div><div class="val">${e.dealTitle ? esc(e.dealTitle) : ''}${e.dealId ? ' · #' + e.dealId : (e.dealTitle ? '' : '—')}</div></div>
         <div class="cell"><div class="k">Компания</div><div class="val">${esc(e.company || '—')}</div></div>
         <div class="cell"><div class="k">Контакт</div><div class="val">${esc(e.contact || '—')}</div></div>
         <div class="cell"><div class="k">Ответственный</div><div class="val">${esc(e.responsible)}</div></div>

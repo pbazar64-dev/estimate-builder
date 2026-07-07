@@ -3,14 +3,55 @@
 // Слушает порт 3000 (требование платформы Vibecode).
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { seedStore, defaultStages, nid } = require('./seed');
+const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS } = require('./seed');
 const { recalc } = require('./calc');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
 const DATA_FILE = path.join(__dirname, 'data', 'store.json');
+
+// Доступ к CRM портала Битрикс24 через API платформы Vibecode.
+// Нужен personal-ключ (vibe_api_*): читает crm.* без пользовательской сессии.
+// Без ключа CRM-эндпоинты отдают демо-данные (DEMO_COMPANIES/DEMO_DEALS).
+const VIBE_BASE = process.env.VIBE_API_BASE || 'https://vibecode.bitrix24.tech/v1';
+const VIBE_KEY = process.env.VIBE_API_KEY || '';
+const CRM_LIVE = /^vibe_api_/.test(VIBE_KEY);
+
+function vibeRequest(method, apiPath, body) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(VIBE_BASE + apiPath);
+    const payload = body ? JSON.stringify(body) : null;
+    const req = https.request({
+      method, hostname: u.hostname, path: u.pathname + u.search,
+      headers: Object.assign(
+        { 'X-Api-Key': VIBE_KEY, 'Accept': 'application/json' },
+        payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}
+      ),
+      timeout: 15000,
+    }, (r) => {
+      let d = ''; r.on('data', (c) => d += c);
+      r.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve({ success: false, raw: d }); } });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+// Нормализация ответа платформы в [{id, title}]
+function pickList(resp) {
+  const arr = Array.isArray(resp) ? resp
+    : (resp && (resp.data || resp.items || (resp.result && resp.result.items))) || [];
+  return (Array.isArray(arr) ? arr : []).map((x) => ({
+    id: x.id != null ? x.id : x.ID,
+    title: x.title || x.TITLE || x.name || ('#' + (x.id != null ? x.id : x.ID)),
+    companyId: x.companyId != null ? x.companyId : (x.COMPANY_ID != null ? Number(x.COMPANY_ID) : undefined),
+  }));
+}
 
 // ---------- Хранилище (in-memory + best-effort persist на диск) ----------
 let store;
@@ -110,11 +151,48 @@ async function api(req, res, parts, query) {
     return sendJSON(res, 200, {
       me: { name: 'А. Шидловский', role: 'company_head', portal: 'avrika.bitrix24.ru' },
       countries: store.countries, stages: store.stages, catalog: store.catalog,
+      crmLive: CRM_LIVE,
     });
   }
 
   // GET /api/health
   if (parts[1] === 'health') return sendJSON(res, 200, { ok: true, ts: Date.now() });
+
+  // ---------- CRM портала (компании / сделки) ----------
+  // GET /api/crm/companies?q=
+  if (method === 'GET' && parts[1] === 'crm' && parts[2] === 'companies') {
+    if (!CRM_LIVE) {
+      const q = (query.q || '').toLowerCase();
+      const list = DEMO_COMPANIES.filter((c) => !q || c.title.toLowerCase().includes(q));
+      return sendJSON(res, 200, { source: 'demo', items: list });
+    }
+    try {
+      const resp = await vibeRequest('GET', '/companies?limit=200&select=id,title&order[title]=asc');
+      let items = pickList(resp).map((x) => ({ id: x.id, title: x.title }));
+      const q = (query.q || '').toLowerCase();
+      if (q) items = items.filter((c) => (c.title || '').toLowerCase().includes(q));
+      return sendJSON(res, 200, { source: 'portal', items });
+    } catch (e) {
+      return sendJSON(res, 200, { source: 'demo', items: DEMO_COMPANIES, warning: String(e && e.message) });
+    }
+  }
+
+  // GET /api/crm/deals?companyId=
+  if (method === 'GET' && parts[1] === 'crm' && parts[2] === 'deals') {
+    const companyId = Number(query.companyId);
+    if (!companyId) return sendJSON(res, 200, { source: CRM_LIVE ? 'portal' : 'demo', items: [] });
+    if (!CRM_LIVE) {
+      return sendJSON(res, 200, { source: 'demo', items: DEMO_DEALS[companyId] || [] });
+    }
+    try {
+      const resp = await vibeRequest('POST', '/deals/search',
+        { filter: { companyId }, select: ['id', 'title', 'companyId'], limit: 200, sort: { id: 'desc' } });
+      const items = pickList(resp).map((x) => ({ id: x.id, title: x.title }));
+      return sendJSON(res, 200, { source: 'portal', items });
+    } catch (e) {
+      return sendJSON(res, 200, { source: 'demo', items: DEMO_DEALS[companyId] || [], warning: String(e && e.message) });
+    }
+  }
 
   // /api/catalog
   if (method === 'GET' && parts[1] === 'catalog') return sendJSON(res, 200, store.catalog);
@@ -160,7 +238,8 @@ async function api(req, res, parts, query) {
       const now = new Date().toISOString();
       const e = {
         id: nid('est'), title: b.title || 'Новая смета',
-        dealId: b.dealId || null, company: b.company || '', contact: b.contact || '',
+        dealId: b.dealId || null, dealTitle: b.dealTitle || '',
+        companyId: b.companyId || null, company: b.company || '', contact: b.contact || '',
         responsible: b.responsible || 'А. Шидловский',
         countryId: c.id, currency: c.currency, rate: c.rate,
         status: 'draft', isArchived: false,

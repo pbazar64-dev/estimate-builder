@@ -106,4 +106,23 @@ function seedStore() {
   return { countries: [...COUNTRIES], stages: [...STAGES], catalog: [...CATALOG], estimates };
 }
 
-module.exports = { COUNTRIES, STAGES, CATALOG, seedStore, defaultStages, nid };
+
+// Демо-данные CRM (используются, когда нет personal-ключа vibe_api_* для чтения портала)
+const DEMO_COMPANIES = [
+  { id: 1, title: 'АО «Конаково»' },
+  { id: 2, title: 'ООО «Прометей Групп»' },
+  { id: 3, title: 'Nordwind LLP' },
+  { id: 4, title: 'Wisła Sp. z o.o.' },
+  { id: 5, title: 'ООО «БелАгроТрейд»' },
+  { id: 6, title: 'АО «Гефест»' },
+];
+const DEMO_DEALS = {
+  1: [{ id: 7781, title: 'Внедрение Битрикс24' }, { id: 7782, title: 'Доработка CRM' }],
+  2: [{ id: 7650, title: 'Спецификация №9' }, { id: 7651, title: 'Поддержка портала' }],
+  3: [{ id: 7654, title: 'Портал под ключ' }],
+  4: [{ id: 7620, title: 'CRM + телефония' }],
+  5: [{ id: 7599, title: 'Аудит портала' }],
+  6: [{ id: 7570, title: 'Разработка смарт-процессов' }],
+};
+
+module.exports = { COUNTRIES, STAGES, CATALOG, DEMO_COMPANIES, DEMO_DEALS, seedStore, defaultStages, nid };
