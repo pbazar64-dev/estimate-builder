@@ -167,7 +167,7 @@ async function api(req, res, parts, query) {
       return sendJSON(res, 200, { source: 'demo', items: list });
     }
     try {
-      const resp = await vibeRequest('GET', '/companies?limit=200&select=id,title&order[title]=asc');
+      const resp = await vibeRequest('GET', '/companies?limit=500&select=id,title&order[title]=asc');
       let items = pickList(resp).map((x) => ({ id: x.id, title: x.title }));
       const q = (query.q || '').toLowerCase();
       if (q) items = items.filter((c) => (c.title || '').toLowerCase().includes(q));

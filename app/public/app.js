@@ -22,7 +22,9 @@ function toast(msg) {
   document.body.appendChild(t); setTimeout(() => t.remove(), 2200);
 }
 
-/* ---------- Клиентский пересчёт (зеркало server/calc.js, без маржи) ---------- */
+/* ---------- Клиентский пересчёт (зеркало server/calc.js, без маржи) ----------
+   «Управление проектом на этапе» — авто-строка: 20% от суммы часов пунктов этапа. */
+const PM_FACTOR = 0.2;
 function recalc(draft, rate) {
   const lines = draft.lines || [], stages = draft.stages || [];
   const enabled = new Set(stages.filter(s => s.on).map(s => s.code));
@@ -36,17 +38,31 @@ function recalc(draft, rate) {
     const qty = line.qty == null ? 1 : (Number(line.qty) || 0);
     const a = rate * (Number(line.hoursClient) || 0) * qty; amountById[line.id] = a; return a;
   }
-  const stageTotals = {}; let total = 0, hoursClient = 0, hoursExecutor = 0;
-  for (const l of lines) if (enabled.has(l.stage) && !l.isGroup) {
-    const qty = l.qty == null ? 1 : (Number(l.qty) || 0);
-    hoursClient += (Number(l.hoursClient) || 0) * qty; hoursExecutor += (Number(l.hoursExecutor) || 0) * qty;
-  }
+  for (const l of lines) if (l.parentId == null) amt(l);
+  for (const l of lines) if (!(l.id in amountById)) amt(l);
+
+  const agg = {};
+  for (const c of enabled) agg[c] = { exec: 0, client: 0, itemsAmount: 0 };
   for (const l of lines) {
-    if (l.parentId == null && enabled.has(l.stage)) { const a = amt(l); stageTotals[l.stage] = (stageTotals[l.stage] || 0) + a; total += a; }
-    else if (l.parentId != null) amt(l);
+    if (!enabled.has(l.stage) || l.isGroup) continue;
+    const qty = l.qty == null ? 1 : (Number(l.qty) || 0);
+    agg[l.stage].exec += (Number(l.hoursExecutor) || 0) * qty;
+    agg[l.stage].client += (Number(l.hoursClient) || 0) * qty;
+  }
+  for (const l of lines) if (l.parentId == null && enabled.has(l.stage)) agg[l.stage].itemsAmount += amountById[l.id] || 0;
+
+  const round1 = (x) => Math.round(x * 10) / 10;
+  const stagePM = {}, stageTotals = {}; let total = 0, hoursClient = 0, hoursExecutor = 0;
+  for (const c of enabled) {
+    const a = agg[c];
+    const pmExec = round1(a.exec * PM_FACTOR), pmClient = round1(a.client * PM_FACTOR);
+    const pmAmount = rate * pmClient, stageTotal = a.itemsAmount + pmAmount;
+    stagePM[c] = { itemsExec: a.exec, itemsClient: a.client, itemsAmount: a.itemsAmount, pmExec, pmClient, pmAmount, total: stageTotal };
+    stageTotals[c] = stageTotal; total += stageTotal;
+    hoursClient += a.client + pmClient; hoursExecutor += a.exec + pmExec;
   }
   const durationDays = Math.max(1, Math.round(hoursClient * 0.5));
-  return { amountById, stageTotals, total, hoursClient, hoursExecutor, durationDays };
+  return { amountById, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, pmFactor: PM_FACTOR };
 }
 
 /* ---------- Роутер ---------- */
@@ -101,57 +117,69 @@ async function openWizard() {
   let sel = App.boot.countries[0].id;
   let companies = { source: 'demo', items: [] };
   try { companies = await api('/crm/companies'); } catch (e) {}
+  const all = companies.items || [];
+  const state = { companyId: null, companyTitle: '', dealId: null, dealTitle: '' };
+
   const m = document.createElement('div'); m.className = 'modal';
   const cnts = () => App.boot.countries.map(c => `<div class="cnt ${c.id === sel ? 'on' : ''}" data-id="${c.id}">
     <div class="fl">${esc(c.name)}</div><div class="cur">${esc(c.currency)}</div>
     <div class="rate tnum">${fmt(c.rate)}<small> /ч</small></div></div>`).join('');
-  const companyOptions = ['<option value="">— выберите компанию —</option>']
-    .concat((companies.items || []).map(c => `<option value="${esc(c.id)}" data-title="${esc(c.title)}">${esc(c.title)}</option>`)).join('');
   const srcNote = companies.source === 'portal'
     ? '<span class="tag t-ok" style="margin-left:8px">портал Битрикс24</span>'
     : '<span class="tag t-warn" style="margin-left:8px">демо-данные</span>';
   m.innerHTML = `<div class="box"><h3>Новая смета</h3>
     <div class="field"><label>Название</label><input id="w_title" placeholder="Внедрение Битрикс24 — …"></div>
-    <div class="field"><label>Компания ${srcNote}</label><select id="w_company">${companyOptions}</select></div>
+    <div class="field" style="position:relative"><label>Компания ${srcNote}</label>
+      <input id="w_company" autocomplete="off" placeholder="Начните вводить название компании…">
+      <div id="w_company_list" class="combo hide"></div>
+      <div class="sub" id="w_company_hint" style="margin-top:5px">Найдено компаний: ${all.length}. Можно выбрать из списка или ввести вручную.</div>
+    </div>
     <div class="field"><label>Сделка</label><select id="w_deal" disabled><option value="">— сначала выберите компанию —</option></select></div>
     <div class="field"><label>Страна расчёта · ставка часа</label><div class="countries" id="w_cnts">${cnts()}</div></div>
     <div class="acts"><button class="btn ghost" id="w_cancel">Отмена</button><button class="btn prim" id="w_ok">Создать →</button></div></div>`;
   document.body.appendChild(m);
   const rebind = () => m.querySelectorAll('.cnt').forEach(el => el.onclick = () => { sel = el.dataset.id; $('#w_cnts').innerHTML = cnts(); rebind(); });
   rebind();
-  // Каскад: компания → сделки
-  const dealSel = $('#w_deal');
-  $('#w_company').onchange = async (ev) => {
-    const cid = ev.target.value;
-    if (!$('#w_title').value) {
-      const opt = ev.target.selectedOptions[0];
-      // авто-подставим название по компании, если пусто
+
+  const cInput = $('#w_company'), cList = $('#w_company_list'), dealSel = $('#w_deal');
+
+  async function loadDeals() {
+    if (!state.companyId) {
+      dealSel.innerHTML = '<option value="">— компания введена вручную, сделок нет —</option>';
+      dealSel.disabled = true; state.dealId = null; state.dealTitle = ''; return;
     }
-    if (!cid) { dealSel.innerHTML = '<option value="">— сначала выберите компанию —</option>'; dealSel.disabled = true; return; }
     dealSel.disabled = true; dealSel.innerHTML = '<option>Загрузка…</option>';
     let deals = { items: [] };
-    try { deals = await api('/crm/deals?companyId=' + encodeURIComponent(cid)); } catch (e) {}
+    try { deals = await api('/crm/deals?companyId=' + encodeURIComponent(state.companyId)); } catch (e) {}
     const opts = ['<option value="">— выберите сделку —</option>']
       .concat((deals.items || []).map(d => `<option value="${esc(d.id)}" data-title="${esc(d.title)}">${esc(d.title)}</option>`));
     if ((deals.items || []).length === 0) opts.push('<option value="" disabled>у компании нет сделок</option>');
     dealSel.innerHTML = opts.join(''); dealSel.disabled = false;
-  };
+  }
+  dealSel.onchange = () => { const o = dealSel.selectedOptions[0]; state.dealId = dealSel.value ? Number(dealSel.value) : null; state.dealTitle = o ? (o.dataset.title || '') : ''; };
+
+  function renderList(q) {
+    const ql = q.trim().toLowerCase();
+    const matches = (ql ? all.filter(c => (c.title || '').toLowerCase().includes(ql)) : all).slice(0, 40);
+    if (!matches.length) { cList.classList.add('hide'); return; }
+    cList.innerHTML = matches.map(c => `<div class="combo-item" data-id="${esc(c.id)}" data-title="${esc(c.title)}">${esc(c.title)}</div>`).join('');
+    cList.classList.remove('hide');
+    cList.querySelectorAll('.combo-item').forEach(it => it.onmousedown = (ev) => {
+      ev.preventDefault();
+      state.companyId = Number(it.dataset.id); state.companyTitle = it.dataset.title;
+      cInput.value = it.dataset.title; cList.classList.add('hide'); loadDeals();
+    });
+  }
+  cInput.oninput = () => { state.companyId = null; state.companyTitle = cInput.value; renderList(cInput.value); loadDeals(); };
+  cInput.onfocus = () => renderList(cInput.value);
+  cInput.onblur = () => setTimeout(() => cList.classList.add('hide'), 150);
+
   $('#w_cancel').onclick = () => m.remove();
   m.onclick = (e) => { if (e.target === m) m.remove(); };
   $('#w_ok').onclick = async () => {
-    const cOpt = $('#w_company').selectedOptions[0];
-    const dOpt = $('#w_deal').selectedOptions[0];
-    const companyTitle = cOpt ? (cOpt.dataset.title || '') : '';
-    const dealTitle = dOpt ? (dOpt.dataset.title || '') : '';
-    const title = $('#w_title').value || (dealTitle || ('Смета — ' + companyTitle)) || 'Новая смета';
-    const body = {
-      title,
-      companyId: $('#w_company').value ? Number($('#w_company').value) : null,
-      company: companyTitle,
-      dealId: $('#w_deal').value ? Number($('#w_deal').value) : null,
-      dealTitle,
-      countryId: sel,
-    };
+    const companyTitle = state.companyTitle || cInput.value.trim();
+    const title = $('#w_title').value || state.dealTitle || (companyTitle ? ('Смета — ' + companyTitle) : 'Новая смета');
+    const body = { title, companyId: state.companyId, company: companyTitle, dealId: state.dealId, dealTitle: state.dealTitle, countryId: sel };
     const e = await api('/estimates', { method: 'POST', body: JSON.stringify(body) });
     m.remove(); toast('Смета создана'); location.hash = '#/edit/' + e.id;
   };
@@ -240,6 +268,7 @@ function renderEditor() {
       const kids = lines.filter(c => c.parentId === l.id);
       kids.forEach((c, ci) => { body += rowHtml(c, `${si + 1}.${li + 1}.${ci + 1}`, r, false); });
     });
+    body += pmRowHtml(s.code, r);
   });
 
   $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Конструктор · ${esc(e.id)}</span>
@@ -276,6 +305,17 @@ function renderEditor() {
     scheduleSave(); liveTotals();
   });
 }
+function pmRowHtml(code, r) {
+  const pm = (r.stagePM && r.stagePM[code]) || { pmExec: 0, pmClient: 0, pmAmount: 0 };
+  return `<tr class="lvl-2 pmrow"><td></td><td class="tnum sub">авто</td>
+    <td class="nm co">Управление проектом на этапе</td>
+    <td class="sub">20% от суммы часов пунктов этапа</td>
+    <td class="r sub">—</td>
+    <td class="r num" data-pm-exec="${code}">${pm.pmExec}</td>
+    <td class="r num" data-pm-client="${code}">${pm.pmClient}</td>
+    <td class="r num co" data-pm-amount="${code}">${fmt(pm.pmAmount)}</td>
+    <td></td></tr>`;
+}
 function rowHtml(l, no, r, isGroup) {
   const amt = r.amountById[l.id] || 0;
   const lvlClass = l.parentId == null ? 'lvl-2' : 'lvl-3';
@@ -307,6 +347,10 @@ function liveTotals() {
     const code = stages[i] && stages[i].code; if (!code) return;
     tr.querySelector('.num').textContent = fmt(r.stageTotals[code] || 0);
   });
+  // обновить авто-строки «Управление проектом»
+  $('#app').querySelectorAll('[data-pm-exec]').forEach(td => { const pm = r.stagePM[td.dataset.pmExec]; if (pm) td.textContent = pm.pmExec; });
+  $('#app').querySelectorAll('[data-pm-client]').forEach(td => { const pm = r.stagePM[td.dataset.pmClient]; if (pm) td.textContent = pm.pmClient; });
+  $('#app').querySelectorAll('[data-pm-amount]').forEach(td => { const pm = r.stagePM[td.dataset.pmAmount]; if (pm) td.textContent = fmt(pm.pmAmount); });
 }
 function nid(p) { return p + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3); }
 function addLine(stage) {
@@ -326,33 +370,64 @@ async function saveVersion() {
   await api('/estimates/' + e.id + '/versions', { method: 'POST', body: JSON.stringify({ comment }) });
   toast('Версия сохранена'); location.hash = '#/e/' + e.id;
 }
+// Порядок и заголовки вкладок каталога — по этапам проекта
+function catalogStages() {
+  const present = new Set(App.boot.catalog.map(c => c.stage));
+  return App.boot.stages.slice().sort((a, b) => a.order - b.order).filter(s => present.has(s.code));
+}
+function catalogHours(c) {
+  return (c.hoursExecutor || c.hoursClient) ? `Исп. <b>${c.hoursExecutor} ч</b> · Клиент <b>${c.hoursClient} ч</b>` : '<b>оценка индивидуально</b>';
+}
+function groupByGroup(items) {
+  const map = new Map();
+  items.forEach(c => { const g = c.group || ''; if (!map.has(g)) map.set(g, []); map.get(g).push(c); });
+  return [...map.entries()];
+}
+
 function openCatalogPicker() {
   const m = document.createElement('div'); m.className = 'modal';
-  const items = App.boot.catalog.map(c => `<tr><td class="co">${esc(c.name)}</td><td class="sub">${esc(c.category)}</td>
-    <td class="r sub tnum">${c.hoursClient} ч</td><td class="r"><button class="btn sm" data-cid="${c.id}">＋</button></td></tr>`).join('');
-  m.innerHTML = `<div class="box" style="width:min(720px,94vw)"><h3>Каталог типовых работ</h3>
-    <div class="tblwrap" style="max-height:60vh;overflow:auto"><table><thead><tr><th>Услуга</th><th>Категория</th><th class="r">Клиент</th><th></th></tr></thead>
-    <tbody>${items}</tbody></table></div>
+  const stages = catalogStages();
+  let active = stages[0] ? stages[0].code : '';
+  const tabs = () => stages.map(s => `<div class="tab ${s.code === active ? 'on' : ''}" data-tab="${s.code}">${esc(stageTitle(s.code))}</div>`).join('');
+  const list = () => groupByGroup(App.boot.catalog.filter(c => c.stage === active)).map(([g, items]) =>
+    `${g ? `<tr><td colspan="4" class="grpname">${esc(g)}</td></tr>` : ''}` +
+    items.map(c => `<tr><td class="co">${esc(c.name)}</td><td class="sub" style="max-width:280px">${esc((c.description || '').slice(0, 90))}${(c.description || '').length > 90 ? '…' : ''}</td>
+      <td class="r sub tnum">${c.hoursClient || 0} ч</td><td class="r"><button class="btn sm" data-cid="${c.id}">＋</button></td></tr>`).join('')
+  ).join('');
+  m.innerHTML = `<div class="box" style="width:min(820px,95vw)"><h3>Каталог типовых работ</h3>
+    <div class="tabs" id="cp_tabs">${tabs()}</div>
+    <div class="tblwrap" style="max-height:56vh;overflow:auto"><table><thead><tr><th>Услуга</th><th>Описание</th><th class="r">Клиент</th><th></th></tr></thead>
+    <tbody id="cp_body">${list()}</tbody></table></div>
     <div class="acts"><button class="btn ghost" id="cp_close">Закрыть</button></div></div>`;
   document.body.appendChild(m);
-  $('#cp_close').onclick = () => m.remove();
-  m.onclick = (ev) => { if (ev.target === m) m.remove(); };
-  m.querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => {
+  const bindAdd = () => m.querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => {
     await api('/estimates/' + App.estimate.id + '/catalog-insert', { method: 'POST', body: JSON.stringify({ catalogItemId: b.dataset.cid }) });
     const fresh = await api('/estimates/' + App.estimate.id); App.estimate = fresh;
     toast('Добавлено в смету'); renderEditor();
   });
+  const bindTabs = () => m.querySelectorAll('[data-tab]').forEach(t => t.onclick = () => { active = t.dataset.tab; $('#cp_tabs').innerHTML = tabs(); $('#cp_body').innerHTML = list(); bindTabs(); bindAdd(); });
+  bindTabs(); bindAdd();
+  $('#cp_close').onclick = () => m.remove();
+  m.onclick = (ev) => { if (ev.target === m) m.remove(); };
 }
 
-/* ---------- Каталог (страница) ---------- */
+/* ---------- Каталог (страница, вкладки по этапам) ---------- */
 function viewCatalog() {
-  const cats = [...new Set(App.boot.catalog.map(c => c.category))];
-  $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Каталог</span><h1>Типовые работы</h1>
-    <p class="dek">Единая база знаний по услугам с оценкой часов. Добавление в смету — из конструктора.</p></div></div>
-    ${cats.map(cat => `<div class="phead" style="margin:22px 0 12px"><span class="eyebrow">${esc(cat)}</span></div>
-      <div class="catgrid">${App.boot.catalog.filter(c => c.category === cat).map(c => `<div class="card">
-        <div class="nm">${esc(c.name)}</div><div class="ds">${esc(c.description)}</div>
-        <div class="mt"><span class="chz">Исп. <b>${c.hoursExecutor} ч</b> · Клиент <b>${c.hoursClient} ч</b></span></div></div>`).join('')}</div>`).join('')}`;
+  const stages = catalogStages();
+  let active = stages[0] ? stages[0].code : '';
+  const render = () => {
+    const tabs = stages.map(s => `<div class="tab ${s.code === active ? 'on' : ''}" data-tab="${s.code}">${esc(stageTitle(s.code))} · ${App.boot.catalog.filter(c => c.stage === s.code).length}</div>`).join('');
+    const groups = groupByGroup(App.boot.catalog.filter(c => c.stage === active)).map(([g, items]) =>
+      `${g ? `<div class="phead" style="margin:20px 0 10px"><span class="eyebrow">${esc(g)}</span></div>` : ''}
+       <div class="catgrid">${items.map(c => `<div class="card">
+         <div class="nm">${esc(c.name)}</div><div class="ds">${esc(c.description)}</div>
+         <div class="mt"><span class="chz">${catalogHours(c)}</span></div></div>`).join('')}</div>`).join('');
+    $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Каталог</span><h1>Типовые работы</h1>
+      <p class="dek">База знаний по услугам, сгруппированная по этапам проекта. Добавление в смету — из конструктора.</p></div></div>
+      <div class="tabs" id="cat_tabs">${tabs}</div><div style="margin-top:8px">${groups}</div>`;
+    $('#app').querySelectorAll('[data-tab]').forEach(t => t.onclick = () => { active = t.dataset.tab; render(); });
+  };
+  render();
 }
 
 /* ---------- Настройки (страны и ставки) ---------- */
@@ -388,6 +463,9 @@ function clientRows(e) {
       out.push({ no: `${si + 1}.${li + 1}`, name: l.name, desc: l.description, qty: l.qty, amount: r.amountById[l.id] || 0, lvl: 2, grp: l.isGroup });
       lines.filter(c => c.parentId === l.id).forEach((c, ci) => out.push({ no: `${si + 1}.${li + 1}.${ci + 1}`, name: c.name, desc: c.description, qty: c.qty, amount: r.amountById[c.id] || 0, lvl: 3 }));
     });
+    // авто-строка «Управление проектом на этапе» (20%)
+    const pm = r.stagePM[s.code];
+    if (pm) out.push({ no: `${si + 1}.${tops.length + 1}`, name: 'Управление проектом на этапе', desc: 'Административное и операционное сопровождение проекта на этапе.', qty: null, amount: pm.pmAmount, lvl: 2 });
   });
   return { rows: out, total: r.total, days: r.durationDays };
 }

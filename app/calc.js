@@ -3,7 +3,12 @@
 //   Цена за единицу = Ставка × Трудозатраты Клиенту
 //   Стоимость строки = Ставка × Трудозатраты Клиенту × Количество
 //   Итог группы/этапа = Σ дочерних стоимостей
+// «Управление проектом на этапе» — автоматическая строка в каждом этапе:
+//   часы = 20% от суммы часов всех пунктов этапа (отдельно исполнитель/клиент),
+//   стоимость = Ставка × часы клиента (PM).
 'use strict';
+
+const PM_FACTOR = 0.2; // 20%
 
 function computeLineAmount(line, rate) {
   const hc = Number(line.hoursClient) || 0;
@@ -11,7 +16,11 @@ function computeLineAmount(line, rate) {
   return rate * hc * qty;
 }
 
-// Возвращает { amount по каждой строке (map по id), stageTotals, total, hoursClient, hoursExecutor, durationDays }
+// Возвращает:
+//   amountById  — стоимость по каждой строке (для групп — сумма детей)
+//   stageTotals — итог по этапу (пункты + Управление проектом)
+//   stagePM     — { [code]: { itemsExec, itemsClient, itemsAmount, pmExec, pmClient, pmAmount, total } }
+//   total, hoursClient, hoursExecutor, durationDays, pmFactor
 function recalc(draft, rate) {
   const lines = draft.lines || [];
   const stages = draft.stages || [];
@@ -37,33 +46,49 @@ function recalc(draft, rate) {
     amountById[line.id] = a;
     return a;
   }
+  // заполнить amountById для всех
+  for (const l of lines) if (l.parentId == null) amountOf(l);
+  for (const l of lines) if (!(l.id in amountById)) amountOf(l);
 
+  // суммы часов и стоимости пунктов по этапу (только не-группы)
+  const agg = {}; // code -> {exec, client, itemsAmount}
+  for (const code of enabled) agg[code] = { exec: 0, client: 0, itemsAmount: 0 };
+  for (const l of lines) {
+    if (!enabled.has(l.stage) || l.isGroup) continue;
+    const qty = l.qty == null ? 1 : Number(l.qty) || 0;
+    agg[l.stage].exec += (Number(l.hoursExecutor) || 0) * qty;
+    agg[l.stage].client += (Number(l.hoursClient) || 0) * qty;
+  }
+  // стоимость пунктов этапа = сумма amountById топ-уровневых строк этапа
+  for (const l of lines) {
+    if (l.parentId == null && enabled.has(l.stage)) {
+      agg[l.stage].itemsAmount += amountById[l.id] || 0;
+    }
+  }
+
+  const round1 = (x) => Math.round(x * 10) / 10;
+  const stagePM = {};
   const stageTotals = {};
   let total = 0, hoursClient = 0, hoursExecutor = 0;
 
-  for (const l of lines) {
-    // накопим часы только по строкам активных этапов и не-группам
-    if (enabled.has(l.stage) && !l.isGroup) {
-      const qty = l.qty == null ? 1 : Number(l.qty) || 0;
-      hoursClient += (Number(l.hoursClient) || 0) * qty;
-      hoursExecutor += (Number(l.hoursExecutor) || 0) * qty;
-    }
+  for (const code of enabled) {
+    const a = agg[code];
+    const pmExec = round1(a.exec * PM_FACTOR);
+    const pmClient = round1(a.client * PM_FACTOR);
+    const pmAmount = rate * pmClient;
+    const stageTotal = a.itemsAmount + pmAmount;
+    stagePM[code] = {
+      itemsExec: a.exec, itemsClient: a.client, itemsAmount: a.itemsAmount,
+      pmExec, pmClient, pmAmount, total: stageTotal,
+    };
+    stageTotals[code] = stageTotal;
+    total += stageTotal;
+    hoursClient += a.client + pmClient;
+    hoursExecutor += a.exec + pmExec;
   }
 
-  for (const l of lines) {
-    if (l.parentId == null && enabled.has(l.stage)) {
-      const a = amountOf(l);
-      stageTotals[l.stage] = (stageTotals[l.stage] || 0) + a;
-      total += a;
-    } else if (l.parentId != null) {
-      amountOf(l); // заполнить amountById для дочерних
-    }
-  }
-
-  // Срок реализации: эмпирически ~0.5 дня на час клиента (95 ч ≈ 48 дн. в исходной смете)
   const durationDays = Math.max(1, Math.round(hoursClient * 0.5));
-
-  return { amountById, stageTotals, total, hoursClient, hoursExecutor, durationDays };
+  return { amountById, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, pmFactor: PM_FACTOR };
 }
 
-module.exports = { recalc, computeLineAmount };
+module.exports = { recalc, computeLineAmount, PM_FACTOR };
