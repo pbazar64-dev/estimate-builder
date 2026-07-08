@@ -102,7 +102,7 @@ async function viewRegistry() {
       <div class="stat"><div class="k">Средняя сумма</div><div class="v tnum">${fmt(avg)}</div></div>
       <div class="stat"><div class="k">Сумма портфеля</div><div class="v tnum">${fmt(sum)}</div></div>`;
     $('#rows').innerHTML = items.map(e => `<tr class="rowlink" data-id="${e.id}">
-      <td class="sub tnum">${esc(e.id)}</td><td class="co">${esc(e.title)}</td><td>${esc(e.company)}</td>
+      <td class="sub tnum">${esc(e.id)}</td><td class="co">${esc(e.title)}</td><td>${e.company ? esc(e.company) : '<span class="sub">—</span>'}</td>
       <td>${esc(e.responsible)}</td><td class="sub">${esc((e.updatedAt || '').slice(0, 10))}</td>
       <td class="tnum">v${e.currentVersion}</td><td>${statusTag(e.status)}</td>
       <td class="r num co">${fmt(e.totalAmount)} <span class="sub">${esc(e.currency)}</span></td></tr>`).join('')
@@ -129,12 +129,12 @@ async function openWizard() {
     : '<span class="tag t-warn" style="margin-left:8px">демо-данные</span>';
   m.innerHTML = `<div class="box"><h3>Новая смета</h3>
     <div class="field"><label>Название</label><input id="w_title" placeholder="Внедрение Битрикс24 — …"></div>
-    <div class="field" style="position:relative"><label>Компания ${srcNote}</label>
+    <div class="field" style="position:relative"><label>Компания <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(необязательно)</span> ${srcNote}</label>
       <input id="w_company" autocomplete="off" placeholder="Начните вводить название компании…">
       <div id="w_company_list" class="combo hide"></div>
-      <div class="sub" id="w_company_hint" style="margin-top:5px">Найдено компаний: ${all.length}. Можно выбрать из списка или ввести вручную.</div>
+      <div class="sub" id="w_company_hint" style="margin-top:5px">Найдено компаний: ${all.length}. Можно выбрать из списка, ввести вручную или оставить пустым.</div>
     </div>
-    <div class="field"><label>Сделка</label><select id="w_deal" disabled><option value="">— сначала выберите компанию —</option></select></div>
+    <div class="field"><label>Сделка <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(необязательно)</span></label><select id="w_deal" disabled><option value="">— без привязки к сделке —</option></select></div>
     <div class="field"><label>Страна расчёта · ставка часа</label><div class="countries" id="w_cnts">${cnts()}</div></div>
     <div class="acts"><button class="btn ghost" id="w_cancel">Отмена</button><button class="btn prim" id="w_ok">Создать →</button></div></div>`;
   document.body.appendChild(m);
@@ -145,7 +145,7 @@ async function openWizard() {
 
   async function loadDeals() {
     if (!state.companyId) {
-      dealSel.innerHTML = '<option value="">— компания введена вручную, сделок нет —</option>';
+      dealSel.innerHTML = '<option value="">— без привязки к сделке —</option>';
       dealSel.disabled = true; state.dealId = null; state.dealTitle = ''; return;
     }
     dealSel.disabled = true; dealSel.innerHTML = '<option>Загрузка…</option>';
@@ -388,16 +388,13 @@ function openCatalogPicker() {
   const m = document.createElement('div'); m.className = 'modal';
   const stages = catalogStages();
   let active = stages[0] ? stages[0].code : '';
-  const tabs = () => stages.map(s => `<div class="tab ${s.code === active ? 'on' : ''}" data-tab="${s.code}">${esc(stageTitle(s.code))}</div>`).join('');
-  const list = () => groupByGroup(App.boot.catalog.filter(c => c.stage === active)).map(([g, items]) =>
-    `${g ? `<tr><td colspan="4" class="grpname">${esc(g)}</td></tr>` : ''}` +
-    items.map(c => `<tr><td class="co">${esc(c.name)}</td><td class="sub" style="max-width:280px">${esc((c.description || '').slice(0, 90))}${(c.description || '').length > 90 ? '…' : ''}</td>
-      <td class="r sub tnum">${c.hoursClient || 0} ч</td><td class="r"><button class="btn sm" data-cid="${c.id}">＋</button></td></tr>`).join('')
-  ).join('');
+  const rowHtml = (c) => `<tr><td class="co">${esc(c.name)}</td><td class="sub" style="max-width:280px">${esc((c.description || '').slice(0, 90))}${(c.description || '').length > 90 ? '…' : ''}</td>
+      <td class="r sub tnum">${c.hoursClient || 0} ч</td><td class="r"><button class="btn sm" data-cid="${c.id}">＋</button></td></tr>`;
   m.innerHTML = `<div class="box" style="width:min(820px,95vw)"><h3>Каталог типовых работ</h3>
-    <div class="tabs" id="cp_tabs">${tabs()}</div>
-    <div class="tblwrap" style="max-height:56vh;overflow:auto"><table><thead><tr><th>Услуга</th><th>Описание</th><th class="r">Клиент</th><th></th></tr></thead>
-    <tbody id="cp_body">${list()}</tbody></table></div>
+    <div style="margin-bottom:10px"><span class="search"><span>⌕</span><input id="cp_q" placeholder="Поиск услуги по всем этапам…" autocomplete="off"></span></div>
+    <div class="tabs" id="cp_tabs"></div>
+    <div class="tblwrap" style="max-height:52vh;overflow:auto"><table><thead><tr><th>Услуга</th><th>Описание</th><th class="r">Клиент</th><th></th></tr></thead>
+    <tbody id="cp_body"></tbody></table></div>
     <div class="acts"><button class="btn ghost" id="cp_close">Закрыть</button></div></div>`;
   document.body.appendChild(m);
   const bindAdd = () => m.querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => {
@@ -405,29 +402,67 @@ function openCatalogPicker() {
     const fresh = await api('/estimates/' + App.estimate.id); App.estimate = fresh;
     toast('Добавлено в смету'); renderEditor();
   });
-  const bindTabs = () => m.querySelectorAll('[data-tab]').forEach(t => t.onclick = () => { active = t.dataset.tab; $('#cp_tabs').innerHTML = tabs(); $('#cp_body').innerHTML = list(); bindTabs(); bindAdd(); });
-  bindTabs(); bindAdd();
+  const update = () => {
+    const found = catMatches($('#cp_q').value);
+    $('#cp_tabs').innerHTML = found ? '' : stages.map(s => `<div class="tab ${s.code === active ? 'on' : ''}" data-tab="${s.code}">${esc(stageTitle(s.code))}</div>`).join('');
+    if (found) {
+      $('#cp_body').innerHTML = found.length ? found.map(rowHtml).join('') : `<tr><td colspan="4" class="sub" style="padding:16px">Ничего не найдено.</td></tr>`;
+    } else {
+      $('#cp_body').innerHTML = groupByGroup(App.boot.catalog.filter(c => c.stage === active)).map(([g, items]) =>
+        `${g ? `<tr><td colspan="4" class="grpname">${esc(g)}</td></tr>` : ''}` + items.map(rowHtml).join('')).join('');
+      $('#cp_tabs').querySelectorAll('[data-tab]').forEach(t => t.onclick = () => { active = t.dataset.tab; update(); });
+    }
+    bindAdd();
+  };
+  $('#cp_q').oninput = update;
+  update();
   $('#cp_close').onclick = () => m.remove();
   m.onclick = (ev) => { if (ev.target === m) m.remove(); };
 }
 
-/* ---------- Каталог (страница, вкладки по этапам) ---------- */
+function catCardHtml(c) {
+  return `<div class="card"><div class="nm">${esc(c.name)}</div><div class="ds">${esc(c.description)}</div>
+    <div class="mt"><span class="chz">${catalogHours(c)}</span></div></div>`;
+}
+function catMatches(q) {
+  const ql = q.trim().toLowerCase();
+  return ql ? App.boot.catalog.filter(c => (c.name + ' ' + (c.description || '')).toLowerCase().includes(ql)) : null;
+}
+
+/* ---------- Каталог (страница: поиск по всем вкладкам + вкладки по этапам) ---------- */
 function viewCatalog() {
   const stages = catalogStages();
   let active = stages[0] ? stages[0].code : '';
-  const render = () => {
-    const tabs = stages.map(s => `<div class="tab ${s.code === active ? 'on' : ''}" data-tab="${s.code}">${esc(stageTitle(s.code))} · ${App.boot.catalog.filter(c => c.stage === s.code).length}</div>`).join('');
-    const groups = groupByGroup(App.boot.catalog.filter(c => c.stage === active)).map(([g, items]) =>
-      `${g ? `<div class="phead" style="margin:20px 0 10px"><span class="eyebrow">${esc(g)}</span></div>` : ''}
-       <div class="catgrid">${items.map(c => `<div class="card">
-         <div class="nm">${esc(c.name)}</div><div class="ds">${esc(c.description)}</div>
-         <div class="mt"><span class="chz">${catalogHours(c)}</span></div></div>`).join('')}</div>`).join('');
-    $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Каталог</span><h1>Типовые работы</h1>
+  $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Каталог</span><h1>Типовые работы</h1>
       <p class="dek">База знаний по услугам, сгруппированная по этапам проекта. Добавление в смету — из конструктора.</p></div></div>
-      <div class="tabs" id="cat_tabs">${tabs}</div><div style="margin-top:8px">${groups}</div>`;
-    $('#app').querySelectorAll('[data-tab]').forEach(t => t.onclick = () => { active = t.dataset.tab; render(); });
+    <div class="toolbar"><span class="search"><span>⌕</span><input id="cat_q" placeholder="Поиск услуги по всем этапам…" autocomplete="off"></span></div>
+    <div class="tabs" id="cat_tabs"></div>
+    <div id="cat_results" style="margin-top:8px"></div>`;
+
+  const update = () => {
+    const q = $('#cat_q').value;
+    const found = catMatches(q);
+    // вкладки
+    $('#cat_tabs').innerHTML = found ? '' : stages.map(s =>
+      `<div class="tab ${s.code === active ? 'on' : ''}" data-tab="${s.code}">${esc(stageTitle(s.code))} · ${App.boot.catalog.filter(c => c.stage === s.code).length}</div>`).join('');
+    // результаты
+    if (found) {
+      if (!found.length) { $('#cat_results').innerHTML = `<p class="sub" style="padding:16px">По запросу «${esc(q)}» ничего не найдено.</p>`; }
+      else {
+        $('#cat_results').innerHTML = `<div class="phead" style="margin:6px 0 10px"><span class="eyebrow">Найдено: ${found.length}</span></div>` +
+          stages.filter(s => found.some(c => c.stage === s.code)).map(s =>
+            `<div class="phead" style="margin:16px 0 8px"><span class="eyebrow" style="color:var(--ink)">${esc(stageTitle(s.code))}</span></div>
+             <div class="catgrid">${found.filter(c => c.stage === s.code).map(catCardHtml).join('')}</div>`).join('');
+      }
+    } else {
+      $('#cat_results').innerHTML = groupByGroup(App.boot.catalog.filter(c => c.stage === active)).map(([g, items]) =>
+        `${g ? `<div class="phead" style="margin:20px 0 10px"><span class="eyebrow">${esc(g)}</span></div>` : ''}
+         <div class="catgrid">${items.map(catCardHtml).join('')}</div>`).join('');
+      $('#cat_tabs').querySelectorAll('[data-tab]').forEach(t => t.onclick = () => { active = t.dataset.tab; update(); });
+    }
   };
-  render();
+  $('#cat_q').oninput = update;
+  update();
 }
 
 /* ---------- Настройки (страны и ставки) ---------- */
