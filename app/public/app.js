@@ -51,11 +51,11 @@ function recalc(draft, rate) {
   }
   for (const l of lines) if (l.parentId == null && enabled.has(l.stage)) agg[l.stage].itemsAmount += amountById[l.id] || 0;
 
-  const round1 = (x) => Math.round(x * 10) / 10;
+  const ceilH = (x) => Math.ceil(x - 1e-9); // часы PM — вверх до целого часа
   const stagePM = {}, stageTotals = {}; let total = 0, hoursClient = 0, hoursExecutor = 0;
   for (const c of enabled) {
     const a = agg[c];
-    const pmExec = round1(a.exec * PM_FACTOR), pmClient = round1(a.client * PM_FACTOR);
+    const pmExec = ceilH(a.exec * PM_FACTOR), pmClient = ceilH(a.client * PM_FACTOR);
     const pmAmount = rate * pmClient, stageTotal = a.itemsAmount + pmAmount;
     stagePM[c] = { itemsExec: a.exec, itemsClient: a.client, itemsAmount: a.itemsAmount, pmExec, pmClient, pmAmount, total: stageTotal };
     stageTotals[c] = stageTotal; total += stageTotal;
@@ -505,19 +505,71 @@ function clientRows(e) {
   return { rows: out, total: r.total, days: r.durationDays };
 }
 function docAction(act, e, vnum) {
-  if (act === 'excel') return exportCSV(e);
+  if (act === 'excel') return exportXLSX(e);
   if (act === 'kp') return openKP(e);
   if (act === 'contract') return openContract(e);
 }
-function exportCSV(e) {
+
+/* ---- Генерация настоящего XLSX без зависимостей (номера — текст, тонкие границы) ---- */
+const _CRC = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; } return t; })();
+function _crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = _CRC[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function _zip(files) {
+  const enc = new TextEncoder(), u16 = (n) => [n & 255, (n >>> 8) & 255], u32 = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+  const parts = [], central = []; let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = enc.encode(f.data), crc = _crc32(data);
+    const local = [0x50, 0x4b, 3, 4, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)];
+    parts.push(Uint8Array.from(local), name, data);
+    central.push(Uint8Array.from([0x50, 0x4b, 1, 2, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)]), name);
+    offset += local.length + name.length + data.length;
+  }
+  let cdSize = 0; for (const c of central) cdSize += c.length;
+  const end = Uint8Array.from([0x50, 0x4b, 5, 6, ...u16(0), ...u16(0), ...u16(central.length / 2), ...u16(central.length / 2), ...u32(cdSize), ...u32(offset), ...u16(0)]);
+  return new Blob([...parts, ...central, end], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+function _xe(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function _col(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = (i - (m + 1)) / 26; } return s; }
+function _sheet(rows, widths) {
+  let body = '';
+  rows.forEach((cells, ri) => {
+    const r = ri + 1; let rc = '';
+    cells.forEach((cell, ci) => {
+      if (!cell || cell.v === '' || cell.v == null) return;
+      const ref = _col(ci) + r, s = cell.bold ? 2 : 1;
+      rc += cell.t === 'n' ? `<c r="${ref}" s="${s}"><v>${cell.v}</v></c>`
+        : `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${_xe(cell.v)}</t></is></c>`;
+    });
+    body += `<row r="${r}">${rc}</row>`;
+  });
+  const cols = widths ? `<cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${cols}<sheetData>${body}</sheetData></worksheet>`;
+}
+const _STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyBorder="1" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+function _xlsx(rows, widths) {
+  return _zip([
+    { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>` },
+    { name: '_rels/.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
+    { name: 'xl/workbook.xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Смета" sheetId="1" r:id="rId1"/></sheets></workbook>` },
+    { name: 'xl/_rels/workbook.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
+    { name: 'xl/styles.xml', data: _STYLES },
+    { name: 'xl/worksheets/sheet1.xml', data: _sheet(rows, widths) },
+  ]);
+}
+function exportXLSX(e) {
   const { rows, total } = clientRows(e);
-  let csv = '﻿№;Наименование;Описание;Кол-во;Стоимость;Валюта\n';
-  rows.forEach(r => { csv += `${r.no};"${(r.name || '').replace(/"/g, '""')}";"${(r.desc || '').replace(/"/g, '""')}";${r.qty == null ? '' : r.qty};${Math.round(r.amount)};${e.currency}\n`; });
-  csv += `;ИТОГО;;;${Math.round(total)};${e.currency}\n`;
+  const T = (v, bold = false) => ({ v, t: 's', bold });
+  const N = (v, bold = false) => ({ v: Math.round(v), t: 'n', bold });
+  const out = [[T('№', true), T('Наименование', true), T('Описание', true), T('Кол-во', true), T('Стоимость', true), T('Валюта', true)]];
+  rows.forEach(r => {
+    const bold = r.lvl === 1;
+    out.push([T(r.no, bold), T(r.name, bold), T(r.desc || '', bold), (r.qty == null || bold) ? null : N(r.qty), N(r.amount, bold), T(e.currency, bold)]);
+  });
+  out.push([null, T('ИТОГО', true), null, null, N(total, true), T(e.currency, true)]);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-  a.download = `Смета_${e.id}.csv`; a.click();
-  toast('Excel/CSV выгружен');
+  a.href = URL.createObjectURL(_xlsx(out, [10, 46, 60, 9, 15, 9]));
+  a.download = `Смета_${e.id}.xlsx`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast('Excel (.xlsx) выгружен');
 }
 function docWindow(title, inner) {
   const w = window.open('', '_blank');

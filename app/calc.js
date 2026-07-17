@@ -66,15 +66,17 @@ function recalc(draft, rate) {
     }
   }
 
-  const round1 = (x) => Math.round(x * 10) / 10;
+  // Часы «Управление проектом» округляются В БОЛЬШУЮ сторону до целого часа
+  // (напр. 20% = 0,45 ч → 1 ч).
+  const ceilH = (x) => Math.ceil(x - 1e-9);
   const stagePM = {};
   const stageTotals = {};
   let total = 0, hoursClient = 0, hoursExecutor = 0;
 
   for (const code of enabled) {
     const a = agg[code];
-    const pmExec = round1(a.exec * PM_FACTOR);
-    const pmClient = round1(a.client * PM_FACTOR);
+    const pmExec = ceilH(a.exec * PM_FACTOR);
+    const pmClient = ceilH(a.client * PM_FACTOR);
     const pmAmount = rate * pmClient;
     const stageTotal = a.itemsAmount + pmAmount;
     stagePM[code] = {

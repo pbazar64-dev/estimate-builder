@@ -301,6 +301,9 @@ async function api(req, res, parts, query) {
         qty: 1, hoursExecutor: item.hoursExecutor, hoursClient: item.hoursClient, isGroup: false,
       };
       e.draft.lines.push(line);
+      // авто-включаем этап услуги, чтобы добавленная строка была видна и редактируема
+      const st = e.draft.stages.find((s) => s.code === item.stage);
+      if (st && !st.on) st.on = true;
       e.updatedAt = new Date().toISOString();
       persist();
       return sendJSON(res, 201, { line, computed: recalc(e.draft, e.rate) });
