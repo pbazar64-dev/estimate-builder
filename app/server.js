@@ -397,13 +397,26 @@ async function api(req, res, parts, query) {
   return sendJSON(res, 404, { error: 'unknown endpoint' });
 }
 
-// Список услуг сметы для задач (кроме «Управление проектом»), с эффективными часами
+// Список услуг сметы для задач (кроме «Управление проектом»), с эффективными часами.
+// Для блока «Настройка штатного функционала» (setup) — одна общая задача,
+// плановые часы = подытог часов исполнителя по блоку (без управления проектом).
 function estimateServices(e) {
   const r = recalc(e.draft, e.rate);
   const out = [];
   e.draft.stages.filter((s) => s.on).sort((a, b) => a.order - b.order).forEach((s) => {
-    e.draft.lines.filter((l) => l.stage === s.code && !l.isGroup).forEach((l) => {
-      if (/^управление проектом/i.test(l.name || '')) return;
+    const lines = e.draft.lines.filter((l) => l.stage === s.code && !l.isGroup && !/^управление проектом/i.test(l.name || ''));
+    if (s.code === 'setup') {
+      const pm = (r.stagePM && r.stagePM[s.code]) || { itemsExec: 0 };
+      if (lines.length || pm.itemsExec) {
+        out.push({
+          name: 'настройки штатного функционала',
+          description: 'Настройка штатного функционала Битрикс24 по согласованному составу работ сметы.',
+          hoursExecutor: pm.itemsExec,
+        });
+      }
+      return;
+    }
+    lines.forEach((l) => {
       const h = (r.lineHours && r.lineHours[l.id]) || { exec: Number(l.hoursExecutor) || 0 };
       out.push({ name: l.name, description: l.description || '', hoursExecutor: h.exec });
     });
@@ -440,6 +453,8 @@ async function launchProject(e, form) {
   if (e.companyId) fields.companyId = e.companyId;
   const specItem = await vibeData('POST', '/items/1040', fields);
   const specId = (specItem && (specItem.item ? specItem.item.id : specItem.id)) || null;
+  // привязка задач к элементу смарт-процесса «Спецификации» (UF_CRM_TASK: T<entityTypeId>_<id>)
+  const crmBind = specId ? ['T' + SPEC.entityTypeId + '_' + specId] : undefined;
 
   // 2) Группа-проект
   let groupId = form.projectId ? Number(form.projectId) : null;
@@ -464,6 +479,7 @@ async function launchProject(e, form) {
     description: intakeDesc,
     deadline: addWorkingDays(today, 2).toISOString(),
     groupId: groupId || undefined,
+    ufCrmTask: crmBind,
   });
   const intakeId = intake && (intake.id || (intake.task && intake.task.id));
   if (intakeId) taskIds.push(intakeId);
@@ -480,6 +496,7 @@ async function launchProject(e, form) {
         timeEstimate: Math.round((svc.hoursExecutor || 0) * 3600),
         deadline: planIso,
         groupId: groupId || undefined,
+        ufCrmTask: crmBind,
       });
       const tid = t && (t.id || (t.task && t.task.id));
       if (tid) taskIds.push(tid);

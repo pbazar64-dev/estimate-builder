@@ -126,8 +126,8 @@ th.r,td.r{text-align:right}
 .chz{font-size:11px;color:var(--ink-3)} .chz b{color:var(--ink)}
 
 /* modal */
-.modal{position:fixed;inset:0;background:rgba(20,17,15,.35);display:flex;align-items:center;justify-content:center;z-index:50}
-.modal .box{background:#fff;border:1px solid var(--ink);width:min(560px,92vw);padding:26px 28px}
+.modal{position:fixed;inset:0;background:rgba(20,17,15,.35);display:flex;align-items:flex-start;justify-content:center;z-index:50;overflow-y:auto;padding:32px 12px;-webkit-overflow-scrolling:touch}
+.modal .box{background:#fff;border:1px solid var(--ink);width:min(560px,92vw);padding:26px 28px;max-height:calc(100vh - 64px);overflow-y:auto;margin:auto}
 .modal h3{font-family:var(--serif);font-size:24px;font-weight:700;margin-bottom:16px}
 .field{margin-bottom:14px}
 .field label{display:block;font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-2);font-weight:700;margin-bottom:6px}

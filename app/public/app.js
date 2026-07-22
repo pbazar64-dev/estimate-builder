@@ -158,10 +158,14 @@ async function openWizard() {
     : '<span class="tag t-warn" style="margin-left:8px">демо-данные</span>';
   m.innerHTML = `<div class="box"><h3>Новая смета</h3>
     <div class="field"><label>Название сметы</label><input id="w_title" placeholder="Например: Внедрение Б24 / Настройка HR-блока / Создание дашборда"><div class="sub" style="margin-top:5px">Итоговое название: «Компания — название сметы».</div></div>
-    <div class="field" style="position:relative"><label>Компания <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(необязательно)</span> ${srcNote}</label>
+    <div class="field" style="position:relative"><label>Компания <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(обязательно)</span> ${srcNote}</label>
       <input id="w_company" autocomplete="off" placeholder="Начните вводить название компании…">
       <div id="w_company_list" class="combo hide"></div>
-      <div class="sub" id="w_company_hint" style="margin-top:5px">Найдено компаний: ${all.length}. Можно выбрать из списка, ввести вручную или оставить пустым.</div>
+      <div class="sub" id="w_company_hint" style="margin-top:5px">Найдено компаний: ${all.length}. Выберите компанию из списка портала.</div>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0 0;cursor:pointer;font-size:12px;color:var(--ink-2)"><input type="checkbox" id="w_company_absent"> <span>Компании нет в списке — ввести название вручную</span></label>
+    </div>
+    <div class="field hide" id="w_company_custom_wrap"><label>Название компании (вручную)</label>
+      <input id="w_company_custom" autocomplete="off" placeholder="Введите название компании">
     </div>
     <div class="field"><label>Сделка <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(необязательно)</span></label><select id="w_deal" disabled><option value="">— без привязки к сделке —</option></select></div>
     <div class="field"><label>Страна расчёта · ставка часа</label><div class="countries" id="w_cnts">${cnts()}</div></div>
@@ -171,6 +175,17 @@ async function openWizard() {
   rebind();
 
   const cInput = $('#w_company'), cList = $('#w_company_list'), dealSel = $('#w_deal');
+  const absentBox = $('#w_company_absent'), customWrap = $('#w_company_custom_wrap'), customInput = $('#w_company_custom');
+  absentBox.onchange = () => {
+    const manual = absentBox.checked;
+    customWrap.classList.toggle('hide', !manual);
+    cInput.disabled = manual;
+    if (manual) {
+      state.companyId = null; state.companyTitle = ''; cInput.value = ''; cList.classList.add('hide');
+      loadDeals(); customInput.focus();
+    } else { state.companyTitle = ''; customInput.value = ''; }
+  };
+  customInput.oninput = () => { state.companyTitle = customInput.value; };
 
   async function loadDeals() {
     if (!state.companyId) {
@@ -206,7 +221,14 @@ async function openWizard() {
   $('#w_cancel').onclick = () => m.remove();
   m.onclick = (e) => { if (e.target === m) m.remove(); };
   $('#w_ok').onclick = async () => {
-    const companyTitle = state.companyTitle || cInput.value.trim();
+    const companyTitle = absentBox.checked
+      ? customInput.value.trim()
+      : (state.companyTitle || cInput.value.trim());
+    if (!companyTitle) {
+      toast('Укажите компанию: выберите из списка или введите название вручную');
+      (absentBox.checked ? customInput : cInput).focus();
+      return;
+    }
     const name = $('#w_title').value.trim() || state.dealTitle || 'Новая смета';
     const title = companyTitle ? (companyTitle + ' — ' + name) : name;
     const body = { title, companyId: state.companyId, company: companyTitle, dealId: state.dealId, dealTitle: state.dealTitle, countryId: sel };
