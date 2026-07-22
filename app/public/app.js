@@ -25,9 +25,29 @@ function toast(msg) {
 /* ---------- Клиентский пересчёт (зеркало server/calc.js, без маржи) ----------
    «Управление проектом на этапе» — авто-строка: 20% от суммы часов пунктов этапа. */
 const PM_FACTOR = 0.2;
+const _ceilH = (x) => Math.ceil(x - 1e-9);
+function effHours(line, baseSum) {
+  if (line.formula && baseSum[line.formula.base]) {
+    const b = baseSum[line.formula.base];
+    return { exec: _ceilH(line.formula.pct * b.exec), client: _ceilH(line.formula.pct * b.client), computed: true };
+  }
+  return { exec: Number(line.hoursExecutor) || 0, client: Number(line.hoursClient) || 0, computed: false };
+}
 function recalc(draft, rate) {
   const lines = draft.lines || [], stages = draft.stages || [];
   const enabled = new Set(stages.filter(s => s.on).map(s => s.code));
+  // базовые суммы часов (для формул) — по не-групповым, не формульным строкам
+  const baseSum = {};
+  for (const l of lines) {
+    if (l.isGroup || l.formula) continue;
+    if (!baseSum[l.stage]) baseSum[l.stage] = { exec: 0, client: 0 };
+    const qty = l.qty == null ? 1 : (Number(l.qty) || 0);
+    baseSum[l.stage].exec += (Number(l.hoursExecutor) || 0) * qty;
+    baseSum[l.stage].client += (Number(l.hoursClient) || 0) * qty;
+  }
+  const lineHours = {};
+  for (const l of lines) lineHours[l.id] = effHours(l, baseSum);
+
   const byParent = new Map();
   for (const l of lines) { const k = l.parentId || ('root:' + l.stage); (byParent.get(k) || byParent.set(k, []).get(k)).push(l); }
   const amountById = {};
@@ -36,7 +56,7 @@ function recalc(draft, rate) {
     if (ch.length) { const s = ch.reduce((a, c) => a + amt(c), 0); amountById[line.id] = s; return s; }
     if (line.isGroup) { amountById[line.id] = 0; return 0; }
     const qty = line.qty == null ? 1 : (Number(line.qty) || 0);
-    const a = rate * (Number(line.hoursClient) || 0) * qty; amountById[line.id] = a; return a;
+    const a = rate * lineHours[line.id].client * qty; amountById[line.id] = a; return a;
   }
   for (const l of lines) if (l.parentId == null) amt(l);
   for (const l of lines) if (!(l.id in amountById)) amt(l);
@@ -46,23 +66,23 @@ function recalc(draft, rate) {
   for (const l of lines) {
     if (!enabled.has(l.stage) || l.isGroup) continue;
     const qty = l.qty == null ? 1 : (Number(l.qty) || 0);
-    agg[l.stage].exec += (Number(l.hoursExecutor) || 0) * qty;
-    agg[l.stage].client += (Number(l.hoursClient) || 0) * qty;
+    agg[l.stage].exec += lineHours[l.id].exec * qty;
+    agg[l.stage].client += lineHours[l.id].client * qty;
   }
   for (const l of lines) if (l.parentId == null && enabled.has(l.stage)) agg[l.stage].itemsAmount += amountById[l.id] || 0;
 
-  const ceilH = (x) => Math.ceil(x - 1e-9); // часы PM — вверх до целого часа
+  const ceilH = _ceilH;
   const stagePM = {}, stageTotals = {}; let total = 0, hoursClient = 0, hoursExecutor = 0;
   for (const c of enabled) {
     const a = agg[c];
     const pmExec = ceilH(a.exec * PM_FACTOR), pmClient = ceilH(a.client * PM_FACTOR);
     const pmAmount = rate * pmClient, stageTotal = a.itemsAmount + pmAmount;
-    stagePM[c] = { itemsExec: a.exec, itemsClient: a.client, itemsAmount: a.itemsAmount, pmExec, pmClient, pmAmount, total: stageTotal };
+    stagePM[c] = { itemsExec: a.exec, itemsClient: a.client, itemsAmount: a.itemsAmount, pmExec, pmClient, pmAmount, total: stageTotal, stageExec: a.exec + pmExec, stageClient: a.client + pmClient };
     stageTotals[c] = stageTotal; total += stageTotal;
     hoursClient += a.client + pmClient; hoursExecutor += a.exec + pmExec;
   }
   const durationDays = Math.max(1, Math.round(hoursClient * 0.5));
-  return { amountById, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, pmFactor: PM_FACTOR };
+  return { amountById, lineHours, baseSum, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, pmFactor: PM_FACTOR };
 }
 
 /* ---------- Роутер ---------- */
@@ -86,7 +106,7 @@ async function viewRegistry() {
     <div class="stats" id="stats"></div>
     <div class="toolbar"><span class="search"><span>⌕</span><input id="q" placeholder="Поиск по названию или компании…"></span></div>
     <div class="panel tblwrap"><table><thead><tr>
-      <th>ID</th><th>Название</th><th>Компания</th><th>Ответственный</th><th>Изменена</th><th>Верс.</th><th>Статус</th><th class="r">Сумма</th>
+      <th>ID</th><th>Название</th><th>Компания</th><th>Ответственный</th><th>Изменена</th><th>Верс.</th><th>Статус</th><th class="r">Сумма</th><th></th>
     </tr></thead><tbody id="rows"></tbody></table></div>`;
   $('#newBtn').onclick = openWizard;
   $('#q').oninput = () => load();
@@ -105,9 +125,17 @@ async function viewRegistry() {
       <td class="sub tnum">${esc(e.id)}</td><td class="co">${esc(e.title)}</td><td>${e.company ? esc(e.company) : '<span class="sub">—</span>'}</td>
       <td>${esc(e.responsible)}</td><td class="sub">${esc((e.updatedAt || '').slice(0, 10))}</td>
       <td class="tnum">v${e.currentVersion}</td><td>${statusTag(e.status)}</td>
-      <td class="r num co">${fmt(e.totalAmount)} <span class="sub">${esc(e.currency)}</span></td></tr>`).join('')
-      || `<tr><td colspan="8" class="sub" style="padding:20px">Смет не найдено.</td></tr>`;
+      <td class="r num co">${fmt(e.totalAmount)} <span class="sub">${esc(e.currency)}</span></td>
+      <td class="r"><span class="del" data-del-est="${e.id}" title="Удалить смету">✕</span></td></tr>`).join('')
+      || `<tr><td colspan="9" class="sub" style="padding:20px">Смет не найдено.</td></tr>`;
     $('#rows').querySelectorAll('.rowlink').forEach(tr => tr.onclick = () => location.hash = '#/e/' + tr.dataset.id);
+    $('#rows').querySelectorAll('[data-del-est]').forEach(x => x.onclick = async (ev) => {
+      ev.stopPropagation();
+      const id = x.dataset.delEst;
+      if (!confirm('Удалить смету ' + id + '? Действие необратимо.')) return;
+      await api('/estimates/' + id, { method: 'DELETE' });
+      toast('Смета удалена'); load();
+    });
   }
   load();
 }
@@ -128,7 +156,7 @@ async function openWizard() {
     ? '<span class="tag t-ok" style="margin-left:8px">портал Битрикс24</span>'
     : '<span class="tag t-warn" style="margin-left:8px">демо-данные</span>';
   m.innerHTML = `<div class="box"><h3>Новая смета</h3>
-    <div class="field"><label>Название</label><input id="w_title" placeholder="Внедрение Битрикс24 — …"></div>
+    <div class="field"><label>Название сметы</label><input id="w_title" placeholder="Например: Внедрение Б24 / Настройка HR-блока / Создание дашборда"><div class="sub" style="margin-top:5px">Итоговое название: «Компания — название сметы».</div></div>
     <div class="field" style="position:relative"><label>Компания <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(необязательно)</span> ${srcNote}</label>
       <input id="w_company" autocomplete="off" placeholder="Начните вводить название компании…">
       <div id="w_company_list" class="combo hide"></div>
@@ -178,7 +206,8 @@ async function openWizard() {
   m.onclick = (e) => { if (e.target === m) m.remove(); };
   $('#w_ok').onclick = async () => {
     const companyTitle = state.companyTitle || cInput.value.trim();
-    const title = $('#w_title').value || state.dealTitle || (companyTitle ? ('Смета — ' + companyTitle) : 'Новая смета');
+    const name = $('#w_title').value.trim() || state.dealTitle || 'Новая смета';
+    const title = companyTitle ? (companyTitle + ' — ' + name) : name;
     const body = { title, companyId: state.companyId, company: companyTitle, dealId: state.dealId, dealTitle: state.dealTitle, countryId: sel };
     const e = await api('/estimates', { method: 'POST', body: JSON.stringify(body) });
     m.remove(); toast('Смета создана'); location.hash = '#/edit/' + e.id;
@@ -261,7 +290,11 @@ function renderEditor() {
     const lines = e.draft.lines.filter(l => l.stage === s.code);
     const tops = lines.filter(l => l.parentId == null);
     const stageTotal = r.stageTotals[s.code] || 0;
-    body += `<tr class="stagehdr"><td></td><td class="tnum">${si + 1}</td><td colspan="5">${esc(stageTitle(s.code))}</td><td class="r num">${fmt(stageTotal)}</td>
+    const sp = r.stagePM[s.code] || { stageExec: 0, stageClient: 0 };
+    body += `<tr class="stagehdr"><td></td><td class="tnum">${si + 1}</td><td colspan="3">${esc(stageTitle(s.code))}</td>
+      <td class="r num" data-stage-exec="${s.code}" title="Итого часов исполнителя по этапу">${sp.stageExec}</td>
+      <td class="r num" data-stage-client="${s.code}" title="Итого часов клиента по этапу">${sp.stageClient}</td>
+      <td class="r num" data-stage-total="${s.code}">${fmt(stageTotal)}</td>
       <td class="r"><button class="btn sm ghost" data-add="${s.code}">+ строка</button></td></tr>`;
     tops.forEach((l, li) => {
       body += rowHtml(l, `${si + 1}.${li + 1}`, r, l.isGroup);
@@ -318,6 +351,7 @@ function pmRowHtml(code, r) {
 }
 function rowHtml(l, no, r, isGroup) {
   const amt = r.amountById[l.id] || 0;
+  const eff = (r.lineHours && r.lineHours[l.id]) || { exec: Number(l.hoursExecutor) || 0, client: Number(l.hoursClient) || 0 };
   const lvlClass = l.parentId == null ? 'lvl-2' : 'lvl-3';
   if (isGroup) {
     return `<tr class="${lvlClass} grp"><td></td><td class="tnum sub">${no}</td>
@@ -325,12 +359,19 @@ function rowHtml(l, no, r, isGroup) {
       <td colspan="4" class="sub">Группа услуг</td><td class="r num co" data-amt="${l.id}">${fmt(amt)}</td>
       <td class="r"><span class="del" data-del="${l.id}">✕</span></td></tr>`;
   }
-  return `<tr class="${lvlClass}"><td></td><td class="tnum sub">${no}</td>
+  const isF = !!l.formula;
+  const pctTxt = isF ? `${Math.round(l.formula.pct * 100)}% от блока «Настройка штатного функционала» (без управления проектом)` : '';
+  const hExec = isF
+    ? `<td class="r"><span class="hrs-lock" data-eff-exec="${l.id}" title="Считается автоматически: ${pctTxt}">${eff.exec} 🔒</span></td>`
+    : `<td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursExecutor" value="${l.hoursExecutor == null ? '' : l.hoursExecutor}"></td>`;
+  const hClient = isF
+    ? `<td class="r"><span class="hrs-lock" data-eff-client="${l.id}" title="Считается автоматически: ${pctTxt}">${eff.client} 🔒</span></td>`
+    : `<td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursClient" value="${l.hoursClient == null ? '' : l.hoursClient}"></td>`;
+  return `<tr class="${lvlClass}${isF ? ' formularow' : ''}"><td></td><td class="tnum sub">${no}</td>
     <td class="nm"><input data-id="${l.id}" data-field="name" value="${esc(l.name)}"></td>
     <td><input data-id="${l.id}" data-field="description" value="${esc(l.description || '')}"></td>
     <td class="r"><input class="r qty" data-id="${l.id}" data-field="qty" value="${l.qty == null ? '' : l.qty}"></td>
-    <td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursExecutor" value="${l.hoursExecutor == null ? '' : l.hoursExecutor}"></td>
-    <td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursClient" value="${l.hoursClient == null ? '' : l.hoursClient}"></td>
+    ${hExec}${hClient}
     <td class="r num co" data-amt="${l.id}">${fmt(amt)}</td>
     <td class="r"><span class="del" data-del="${l.id}">✕</span></td></tr>`;
 }
@@ -341,16 +382,17 @@ function liveTotals() {
   if (tb) tb.querySelectorAll('b')[0].textContent = fmt(r.total) + ' ' + e.currency,
     tb.querySelectorAll('b')[1].textContent = r.hoursClient,
     tb.querySelectorAll('b')[2].textContent = r.durationDays + ' дн.';
-  // обновить итоги этапов
-  const stages = e.draft.stages.filter(s => s.on).sort((a, b) => a.order - b.order);
-  $('#app').querySelectorAll('.stagehdr').forEach((tr, i) => {
-    const code = stages[i] && stages[i].code; if (!code) return;
-    tr.querySelector('.num').textContent = fmt(r.stageTotals[code] || 0);
-  });
-  // обновить авто-строки «Управление проектом»
+  // итоги этапов (стоимость + подытоги часов)
+  $('#app').querySelectorAll('[data-stage-total]').forEach(td => { td.textContent = fmt(r.stageTotals[td.dataset.stageTotal] || 0); });
+  $('#app').querySelectorAll('[data-stage-exec]').forEach(td => { const pm = r.stagePM[td.dataset.stageExec]; if (pm) td.textContent = pm.stageExec; });
+  $('#app').querySelectorAll('[data-stage-client]').forEach(td => { const pm = r.stagePM[td.dataset.stageClient]; if (pm) td.textContent = pm.stageClient; });
+  // авто-строки «Управление проектом»
   $('#app').querySelectorAll('[data-pm-exec]').forEach(td => { const pm = r.stagePM[td.dataset.pmExec]; if (pm) td.textContent = pm.pmExec; });
   $('#app').querySelectorAll('[data-pm-client]').forEach(td => { const pm = r.stagePM[td.dataset.pmClient]; if (pm) td.textContent = pm.pmClient; });
   $('#app').querySelectorAll('[data-pm-amount]').forEach(td => { const pm = r.stagePM[td.dataset.pmAmount]; if (pm) td.textContent = fmt(pm.pmAmount); });
+  // формула-услуги (авто-часы)
+  $('#app').querySelectorAll('[data-eff-exec]').forEach(sp => { const h = r.lineHours[sp.dataset.effExec]; if (h) sp.textContent = h.exec + ' 🔒'; });
+  $('#app').querySelectorAll('[data-eff-client]').forEach(sp => { const h = r.lineHours[sp.dataset.effClient]; if (h) sp.textContent = h.client + ' 🔒'; });
 }
 function nid(p) { return p + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3); }
 function addLine(stage) {

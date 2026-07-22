@@ -187,7 +187,11 @@ const CATALOG = [
     "name": "Написание ТЗ (технического задания)",
     "description": "Создание детального документа, регламентирующего состав, содержание, логику работы и ожидаемые результаты настраиваемых функциональных элементов портала.",
     "hoursExecutor": 8,
-    "hoursClient": 16
+    "hoursClient": 16,
+    "formula": {
+      "base": "setup",
+      "pct": 0.2
+    }
   },
   {
     "id": "c20",
@@ -196,7 +200,11 @@ const CATALOG = [
     "name": "Написание ЛТ (листа требований)",
     "description": "Создание документа, регламентирующего состав, логику работы и ожидаемые результаты настраиваемых функциональных элементов портала.",
     "hoursExecutor": 4,
-    "hoursClient": 8
+    "hoursClient": 8,
+    "formula": {
+      "base": "setup",
+      "pct": 0.15
+    }
   },
   {
     "id": "c21",
@@ -574,7 +582,11 @@ const CATALOG = [
     "name": "Тестирование и корректировки настроек",
     "description": "Проведение комплексного тестирования системы Исполнителем и приёмка работ Заказчиком, формирование реестра корректировок, реализация выявленных корректировок, дополнений.",
     "hoursExecutor": 6,
-    "hoursClient": 8
+    "hoursClient": 8,
+    "formula": {
+      "base": "setup",
+      "pct": 0.15
+    }
   },
   {
     "id": "c63",
@@ -601,7 +613,11 @@ const CATALOG = [
     "name": "Запись обучающих видео по настроенному функционалу",
     "description": "Запись кратких видеоинструкций по работе с основными настроенными элементами системы.",
     "hoursExecutor": 1,
-    "hoursClient": 2
+    "hoursClient": 2,
+    "formula": {
+      "base": "setup",
+      "pct": 0.02
+    }
   },
   {
     "id": "c66",
@@ -647,8 +663,8 @@ function konakovoLines() {
     { id: 'ln4', stage: 'setup', level: 3, parentId: 'ln_crm', name: 'Настройка прав доступа к CRM', description: 'до 7 ролей', qty: 1, hoursExecutor: 1, hoursClient: 2, isGroup: false },
     gInt,
     { id: 'ln5', stage: 'setup', level: 3, parentId: 'ln_int', name: 'Интеграция с телефонией', description: 'ВАТС / ип-телефония Б24', qty: 1, hoursExecutor: 6, hoursClient: 8, isGroup: false },
-    { id: 'ln6', stage: 'modeling', level: 2, parentId: null, name: 'Написание ЛТ (листа требований)', description: 'Создание документа требований.', qty: 1, hoursExecutor: 4, hoursClient: 8, isGroup: false },
-    { id: 'ln7', stage: 'trial', level: 2, parentId: null, name: 'Тестирование и корректировки', description: 'Комплексное тестирование и приёмка.', qty: 1, hoursExecutor: 6, hoursClient: 8, isGroup: false },
+    { id: 'ln6', stage: 'modeling', level: 2, parentId: null, name: 'Написание ЛТ (листа требований)', description: 'Создание документа требований.', qty: 1, hoursExecutor: 4, hoursClient: 8, isGroup: false, formula: { base: 'setup', pct: 0.15 } },
+    { id: 'ln7', stage: 'trial', level: 2, parentId: null, name: 'Тестирование и корректировки', description: 'Комплексное тестирование и приёмка.', qty: 1, hoursExecutor: 6, hoursClient: 8, isGroup: false, formula: { base: 'setup', pct: 0.15 } },
   ];
 }
 

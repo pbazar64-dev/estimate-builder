@@ -259,6 +259,12 @@ async function api(req, res, parts, query) {
       const r = recalc(e.draft, e.rate);
       return sendJSON(res, 200, { ...e, computed: r, summary: estimateSummary(e) });
     }
+    // DELETE /api/estimates/:id  (полное удаление из реестра)
+    if (method === 'DELETE' && !sub) {
+      store.estimates = store.estimates.filter((x) => x.id !== e.id);
+      persist();
+      return sendJSON(res, 200, { ok: true });
+    }
     // PUT /api/estimates/:id/draft
     if (method === 'PUT' && sub === 'draft') {
       const b = await readBody(req);
@@ -300,6 +306,7 @@ async function api(req, res, parts, query) {
         name: item.name, description: item.description,
         qty: 1, hoursExecutor: item.hoursExecutor, hoursClient: item.hoursClient, isGroup: false,
       };
+      if (item.formula) line.formula = item.formula; // услуга-формула (авто-часы)
       e.draft.lines.push(line);
       // авто-включаем этап услуги, чтобы добавленная строка была видна и редактируема
       const st = e.draft.stages.find((s) => s.code === item.stage);

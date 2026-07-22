@@ -159,6 +159,12 @@ th.r,td.r{text-align:right}
 .etbl tr.pmrow td{background:#F4F1EA;color:var(--ink-2)}
 .etbl tr.pmrow .nm{font-style:italic}
 
+/* формула-услуги (авто-часы, редактирование часов запрещено) */
+.etbl tr.formularow td{background:#FBF7EF}
+.hrs-lock{font-variant-numeric:tabular-nums;color:var(--ink-2);cursor:help;white-space:nowrap;font-size:12px}
+/* подытоги часов в шапке этапа */
+.stagehdr [data-stage-exec],.stagehdr [data-stage-client]{font-family:var(--sans);font-size:13px;font-weight:400;color:var(--ink-2)}
+
 /* подзаголовок группы в пикере каталога */
 td.grpname{font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--ink-2);background:#F7F4EE;padding:9px 10px}
 
