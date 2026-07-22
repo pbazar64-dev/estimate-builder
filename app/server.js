@@ -53,6 +53,37 @@ function pickList(resp) {
   }));
 }
 
+// ---------- Пункт 9: «Запустить проект» — смарт-процесс «Спецификации» (1040) ----------
+const SPEC = {
+  entityTypeId: 1040,
+  categoryId: 29,
+  stageEntityId: 'DYNAMIC_1040_STAGE_29',
+  licenseField: 'ufCrm13_1768284649304',
+  countryField: 'ufCrm13_1768988422809',
+  hoursClientField: 'ufCrm13_1775559994',
+  hoursExecutorField: 'ufCrm13_1775560009',
+  totalField: 'ufCrm13_1775560026',
+  startDateField: 'ufCrm13_1775560192',
+  planDateField: 'ufCrm13_1777990374',
+  durationField: 'ufCrm13_1775560141',
+  commentField: 'ufCrm13_1777983822',
+  analystField: 'ufCrm13_1779266314',
+};
+const USERS = { polina: 259, nastasya: 301, andrey: 1, sergey: 71 };
+// Смета → страна в смарт-процессе (enum id)
+const COUNTRY_ENUM = { ru: 1465 /* РФ */, by: 1463 /* РБ */, kz: 1467 /* РК */ };
+const iso = (d) => d.toISOString().slice(0, 10);
+function addWorkingDays(date, days) {
+  const d = new Date(date.getTime()); let added = 0;
+  while (added < days) { d.setDate(d.getDate() + 1); const wd = d.getDay(); if (wd !== 0 && wd !== 6) added++; }
+  return d;
+}
+async function vibeData(method, apiPath, body) {
+  const r = await vibeRequest(method, apiPath, body);
+  if (r && r.success === false) throw new Error((r.error && r.error.message) || 'vibe error');
+  return r && (r.data !== undefined ? r.data : r);
+}
+
 // ---------- Хранилище (in-memory + best-effort persist на диск) ----------
 let store;
 try {
@@ -157,6 +188,24 @@ async function api(req, res, parts, query) {
 
   // GET /api/health
   if (parts[1] === 'health') return sendJSON(res, 200, { ok: true, ts: Date.now() });
+
+  // GET /api/launch-meta — данные для формы «Запустить проект»
+  if (method === 'GET' && parts[1] === 'launch-meta') {
+    if (!CRM_LIVE) return sendJSON(res, 200, { crmLive: false, licenses: [], stages: [], projects: [] });
+    try {
+      const fdata = await vibeData('GET', '/items/1040/fields');
+      const lf = fdata.fields[SPEC.licenseField];
+      const licenses = (lf && lf.items || []).map((x) => ({ id: x.ID || x.id, name: x.VALUE || x.value }));
+      const st = await vibeData('GET', `/statuses?entityId=${SPEC.stageEntityId}&limit=50`);
+      const stages = (Array.isArray(st) ? st : (st.items || [])).map((x) => ({ id: x.statusId, name: x.name }));
+      const wg = await vibeData('GET', '/workgroups?limit=200&select=id,name,isProject');
+      const projects = (Array.isArray(wg) ? wg : (wg.items || []))
+        .filter((g) => g.isProject).map((g) => ({ id: g.id, name: g.name }));
+      return sendJSON(res, 200, { crmLive: true, licenses, stages, projects });
+    } catch (err) {
+      return sendJSON(res, 200, { crmLive: true, licenses: [], stages: [], projects: [], warning: String(err && err.message) });
+    }
+  }
 
   // ---------- CRM портала (компании / сделки) ----------
   // GET /api/crm/companies?q=
@@ -328,9 +377,120 @@ async function api(req, res, parts, query) {
       persist();
       return sendJSON(res, 200, { ok: true, status: e.status });
     }
+    // POST /api/estimates/:id/launch — запуск проекта (смарт-процесс + группа + задачи)
+    if (method === 'POST' && sub === 'launch') {
+      if (!CRM_LIVE) return sendJSON(res, 400, { error: 'CRM недоступна: нужен personal-ключ vibe_api_*' });
+      const b = await readBody(req);
+      try {
+        const result = await launchProject(e, b);
+        e.status = 'launched';
+        e.launch = result;
+        e.updatedAt = new Date().toISOString();
+        persist();
+        return sendJSON(res, 201, result);
+      } catch (err) {
+        return sendJSON(res, 502, { error: 'launch_failed', message: String(err && err.message) });
+      }
+    }
   }
 
   return sendJSON(res, 404, { error: 'unknown endpoint' });
+}
+
+// Список услуг сметы для задач (кроме «Управление проектом»), с эффективными часами
+function estimateServices(e) {
+  const r = recalc(e.draft, e.rate);
+  const out = [];
+  e.draft.stages.filter((s) => s.on).sort((a, b) => a.order - b.order).forEach((s) => {
+    e.draft.lines.filter((l) => l.stage === s.code && !l.isGroup).forEach((l) => {
+      if (/^управление проектом/i.test(l.name || '')) return;
+      const h = (r.lineHours && r.lineHours[l.id]) || { exec: Number(l.hoursExecutor) || 0 };
+      out.push({ name: l.name, description: l.description || '', hoursExecutor: h.exec });
+    });
+  });
+  return { services: out, computed: r };
+}
+
+async function launchProject(e, form) {
+  const { services, computed } = estimateServices(e);
+  const today = new Date();
+  const planDate = addWorkingDays(today, computed.durationDays || 1);
+  const launcher = USERS.andrey; // текущий пользователь приложения
+
+  // 1) Элемент смарт-процесса «Спецификации» (1040)
+  const observers = [USERS.andrey];
+  if (e.countryId === 'ru' || e.countryId === 'kz') observers.push(USERS.sergey);
+  const fields = {
+    title: e.title,
+    categoryId: SPEC.categoryId,
+    assignedById: USERS.polina,
+    observers,
+    [SPEC.analystField]: USERS.nastasya,
+    [SPEC.hoursClientField]: computed.hoursClient,
+    [SPEC.hoursExecutorField]: computed.hoursExecutor,
+    [SPEC.totalField]: Math.round(computed.total),
+    [SPEC.durationField]: computed.durationDays,
+    [SPEC.startDateField]: iso(today),
+    [SPEC.planDateField]: iso(planDate),
+  };
+  if (form.stageId) fields.stageId = form.stageId;
+  if (form.license) fields[SPEC.licenseField] = form.license;
+  if (form.comment) fields[SPEC.commentField] = form.comment;
+  if (COUNTRY_ENUM[e.countryId]) fields[SPEC.countryField] = COUNTRY_ENUM[e.countryId];
+  if (e.companyId) fields.companyId = e.companyId;
+  const specItem = await vibeData('POST', '/items/1040', fields);
+  const specId = (specItem && (specItem.item ? specItem.item.id : specItem.id)) || null;
+
+  // 2) Группа-проект
+  let groupId = form.projectId ? Number(form.projectId) : null;
+  let groupCreated = false;
+  if (form.createNewFolder) {
+    const grp = await vibeData('POST', '/workgroups', {
+      name: e.title, ownerId: USERS.polina, isProject: true, opened: true,
+      members: [USERS.polina, USERS.nastasya, launcher],
+    });
+    groupId = (grp && (grp.id || (grp.workgroup && grp.workgroup.id))) || null;
+    groupCreated = true;
+  }
+
+  // 3) Задача «…: взять в работу»
+  const taskIds = [];
+  const intakeDesc = [form.comment || '', form.contacts ? ('Контактные данные: ' + form.contacts) : ''].filter(Boolean).join('\n\n');
+  const intake = await vibeData('POST', '/tasks', {
+    title: `${e.title}: взять в работу`,
+    responsibleId: USERS.polina,
+    createdBy: launcher,
+    accomplices: [String(USERS.nastasya)],
+    description: intakeDesc,
+    deadline: addWorkingDays(today, 2).toISOString(),
+    groupId: groupId || undefined,
+  });
+  const intakeId = intake && (intake.id || (intake.task && intake.task.id));
+  if (intakeId) taskIds.push(intakeId);
+
+  // 4) Задачи по услугам
+  const planIso = planDate.toISOString();
+  for (const svc of services) {
+    try {
+      const t = await vibeData('POST', '/tasks', {
+        title: `${e.title}: ${svc.name}`,
+        description: svc.description,
+        responsibleId: USERS.nastasya,
+        createdBy: USERS.polina,
+        timeEstimate: Math.round((svc.hoursExecutor || 0) * 3600),
+        deadline: planIso,
+        groupId: groupId || undefined,
+      });
+      const tid = t && (t.id || (t.task && t.task.id));
+      if (tid) taskIds.push(tid);
+    } catch (e2) { /* пропускаем сбойную задачу */ }
+  }
+
+  return {
+    specId, groupId, groupCreated, taskIds,
+    specUrl: specId ? `https://avrika.bitrix24.ru/crm/type/1040/details/${specId}/` : null,
+    tasksCreated: taskIds.length,
+  };
 }
 
 // ---------- Сервер ----------

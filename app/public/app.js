@@ -13,6 +13,7 @@ const STATUS = {
   approved: ['Согласована', 't-ok'], rejected: ['Отклонена', 't-dg'],
   kp_ready: ['КП сформировано', 't-ink'], contract_ready: ['Договор', 't-ink'],
   signed: ['Подписан', 't-ok'], archived: ['Архив', 't-draft'],
+  launched: ['Проект запущен', 't-ok'],
 };
 const statusTag = (s) => { const x = STATUS[s] || [s, 't-draft']; return `<span class="tag ${x[1]}">${esc(x[0])}</span>`; };
 const stageTitle = (code) => (App.boot.stages.find(s => s.code === code) || {}).title || code;
@@ -252,6 +253,8 @@ async function viewCard(id) {
         <hr class="hair">
         <button class="btn prim" id="editBtn">Открыть конструктор</button>
         <button class="btn ghost" id="apprBtn">Отправить на согласование</button>
+        ${e.versions.length ? '<button class="btn" id="launchBtn" style="background:var(--ok);border-color:var(--ok);color:#fff">🚀 Запустить проект</button>' : ''}
+        ${e.launch && e.launch.specUrl ? `<a class="link" href="${esc(e.launch.specUrl)}" target="_blank" style="text-align:center">Спецификация #${esc(e.launch.specId)} · задач: ${e.launch.tasksCreated}</a>` : ''}
       </div>
     </div>
     <div class="phead" style="margin-top:34px"><div><span class="eyebrow">Версии</span></div></div>
@@ -259,7 +262,52 @@ async function viewCard(id) {
 
   $('#editBtn').onclick = () => location.hash = '#/edit/' + e.id;
   $('#apprBtn').onclick = async () => { await api('/estimates/' + e.id + '/status', { method: 'POST', body: JSON.stringify({ status: 'on_approval' }) }); toast('Отправлено на согласование'); viewCard(e.id); };
+  const lb = $('#launchBtn'); if (lb) lb.onclick = () => openLaunchModal(e);
   $('#app').querySelectorAll('[data-act]').forEach(b => b.onclick = () => docAction(b.dataset.act, e, Number(b.dataset.v)));
+}
+
+/* ---------- Запуск проекта (смарт-процесс «Спецификации» + группа + задачи) ---------- */
+async function openLaunchModal(e) {
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div class="box" style="width:min(560px,94vw)"><h3>Запустить проект</h3>
+    <div class="sub" style="margin-bottom:14px">Будет создан элемент смарт-процесса «Спецификации», группа-проект и задачи по услугам сметы.</div>
+    <div id="lm_load" class="sub">Загрузка справочников портала…</div>
+    <div id="lm_form" class="hide">
+      <div class="field"><label>Лицензия</label><select id="lm_license"></select></div>
+      <div class="field"><label>Стадия спецификации</label><select id="lm_stage"></select></div>
+      <div class="field"><label>Комментарий</label><input id="lm_comment" placeholder="Комментарий к проекту"></div>
+      <div class="field"><label>Контактные данные</label><input id="lm_contacts" placeholder="Контакты ответственного со стороны клиента"></div>
+      <div class="field"><label>Проект (папка)</label><select id="lm_project"></select></div>
+      <label style="display:flex;gap:8px;align-items:center;margin:6px 0 4px;cursor:pointer"><input type="checkbox" id="lm_newfolder"> <span>Создать новую папку проекта</span></label>
+    </div>
+    <div class="acts"><button class="btn ghost" id="lm_cancel">Отмена</button><button class="btn prim" id="lm_ok" disabled>🚀 Запустить проект</button></div></div>`;
+  document.body.appendChild(m);
+  $('#lm_cancel').onclick = () => m.remove();
+  m.onclick = (ev) => { if (ev.target === m) m.remove(); };
+
+  let meta = { licenses: [], stages: [], projects: [] };
+  try { meta = await api('/launch-meta'); } catch (x) {}
+  $('#lm_load').classList.add('hide'); $('#lm_form').classList.remove('hide'); $('#lm_ok').disabled = false;
+  const opt = (arr) => ['<option value="">— не выбрано —</option>'].concat(arr.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`)).join('');
+  $('#lm_license').innerHTML = opt(meta.licenses);
+  $('#lm_stage').innerHTML = opt(meta.stages);
+  $('#lm_project').innerHTML = opt(meta.projects);
+  $('#lm_newfolder').onchange = (ev) => { $('#lm_project').disabled = ev.target.checked; };
+
+  $('#lm_ok').onclick = async () => {
+    $('#lm_ok').disabled = true; $('#lm_ok').textContent = 'Запуск…';
+    const body = {
+      license: $('#lm_license').value || null,
+      stageId: $('#lm_stage').value || null,
+      comment: $('#lm_comment').value,
+      contacts: $('#lm_contacts').value,
+      projectId: $('#lm_newfolder').checked ? null : ($('#lm_project').value || null),
+      createNewFolder: $('#lm_newfolder').checked,
+    };
+    const res = await api('/estimates/' + e.id + '/launch', { method: 'POST', body: JSON.stringify(body) });
+    if (res && res.error) { toast('Ошибка запуска: ' + (res.message || res.error)); $('#lm_ok').disabled = false; $('#lm_ok').textContent = '🚀 Запустить проект'; return; }
+    m.remove(); toast(`Проект запущен: спецификация #${res.specId}, задач ${res.tasksCreated}`); viewCard(e.id);
+  };
 }
 
 /* ---------- Конструктор (редактор) ---------- */
