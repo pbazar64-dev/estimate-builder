@@ -1084,10 +1084,19 @@ async function resolveIdentity() {
   if (u) return u;
   return { id: null, name: App.boot.me.name };
 }
+function authStatusFromUrl() {
+  const m = (location.search || '').match(/[?&]auth=([^&]+)/);
+  if (!m) return null;
+  const reasonM = (location.search || '').match(/[?&]reason=([^&]+)/);
+  return { status: m[1], reason: reasonM ? decodeURIComponent(reasonM[1]) : '' };
+}
 (async function init() {
   App.boot = await api('/bootstrap');
+  const authStatus = authStatusFromUrl();
   App.me = await resolveIdentity();
   $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}`;
   window.addEventListener('hashchange', router);
   router();
+  if (authStatus && authStatus.status === 'err') { toast('Определение пользователя не удалось (' + (authStatus.reason || 'ошибка') + ')'); try { history.replaceState(null, '', location.pathname); } catch (e) {} }
+  else if (authStatus && authStatus.status === 'ok' && App.me && App.me.id) { toast('Вы вошли как ' + App.me.name); }
 })();
