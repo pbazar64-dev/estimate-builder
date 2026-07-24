@@ -4,61 +4,22 @@
 const App = { boot: null, estimate: null, saveTimer: null, me: null };
 const $ = (s, r = document) => r.querySelector(s);
 
-// Текущий пользователь Битрикс24. Приоритет:
-// 1) авто-детект через JS SDK портала (BX24.callMethod user.current);
-// 2) ранее сохранённый выбор (localStorage);
-// 3) одноразовый выбор себя из списка сотрудников (запоминается).
-const LS_ME = 'eb_me_v1';
-function loadStoredMe() { try { const s = localStorage.getItem(LS_ME); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
-function storeMe(m) { try { localStorage.setItem(LS_ME, JSON.stringify(m)); } catch (e) {} }
+// Текущий пользователь Битрикс24 (через JS SDK портала). Нужен для авторства смет.
 function resolveB24User() {
   return new Promise((resolve) => {
     if (typeof BX24 === 'undefined' || !BX24) return resolve(null);
     let done = false; const fin = (v) => { if (!done) { done = true; resolve(v); } };
-    const to = setTimeout(() => fin(null), 9000);
-    const parse = (u) => { const name = [u.NAME, u.LAST_NAME].filter(Boolean).join(' ').trim(); return { id: Number(u.ID) || null, name: name || u.EMAIL || null }; };
+    setTimeout(() => fin(null), 4000);
     try {
       BX24.init(function () {
         BX24.callMethod('user.current', {}, function (res) {
-          if (res && res.error && res.error()) {
-            // запасной вызов profile (доступен даже при user_brief)
-            BX24.callMethod('profile', {}, function (r2) {
-              clearTimeout(to);
-              if (r2 && r2.error && r2.error()) return fin(null);
-              const p = (r2 && r2.data && r2.data()) || {};
-              const name = [p.NAME, p.LAST_NAME].filter(Boolean).join(' ').trim();
-              fin(name || p.ID ? { id: Number(p.ID) || null, name: name || null } : null);
-            });
-            return;
-          }
-          clearTimeout(to);
-          fin(parse((res && res.data && res.data()) || {}));
+          if (res.error && res.error()) return fin(null);
+          const u = res.data() || {};
+          const name = [u.NAME, u.LAST_NAME].filter(Boolean).join(' ').trim();
+          fin({ id: Number(u.ID) || null, name: name || u.EMAIL || null });
         });
       });
-    } catch (e) { clearTimeout(to); fin(null); }
-  });
-}
-// Модальный выбор «кто я» из списка сотрудников портала (force=true — без «Пропустить»).
-async function pickMe(force) {
-  let users = [];
-  try { const r = await api('/crm/users'); users = r.items || []; } catch (e) {}
-  const cur = App.me && App.me.id;
-  return new Promise((resolve) => {
-    const m = document.createElement('div'); m.className = 'modal';
-    const opts = users.map(u => `<option value="${u.id}" data-name="${esc(u.name)}" ${u.id === cur ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
-    m.innerHTML = `<div class="box" style="width:min(440px,92vw)"><h3>Кто вы?</h3>
-      <div class="sub" style="margin-bottom:14px">Не удалось автоматически определить пользователя Битрикс24. Выберите себя — сметы будут сохраняться под вашим именем. Выбор запомнится (можно сменить в шапке).</div>
-      <div class="field"><label>Сотрудник</label><select id="pm_sel">${opts || '<option value="">— список недоступен —</option>'}</select></div>
-      <div class="acts">${force ? '' : '<button class="btn ghost" id="pm_skip">Позже</button>'}<button class="btn prim" id="pm_ok">Это я</button></div></div>`;
-    document.body.appendChild(m);
-    $('#pm_ok').onclick = () => {
-      const s = $('#pm_sel'), o = s.selectedOptions[0];
-      if (!s.value) { m.remove(); return resolve(null); }
-      const me = { id: Number(s.value) || null, name: o ? o.dataset.name : '' };
-      storeMe(me); m.remove(); resolve(me);
-    };
-    const skip = $('#pm_skip'); if (skip) skip.onclick = () => { m.remove(); resolve(null); };
-    m.onclick = (ev) => { if (ev.target === m && !force) { m.remove(); resolve(null); } };
+    } catch (e) { fin(null); }
   });
 }
 function author() {
@@ -1088,18 +1049,11 @@ function openContract(e) {
 }
 
 /* ---------- Bootstrap ---------- */
-function renderWho() {
-  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)} · <span class="wchg" id="whoChange">сменить</span>`;
-  const wc = $('#whoChange'); if (wc) wc.onclick = async () => { const me = await pickMe(true); if (me) { App.me = me; renderWho(); toast('Вы вошли как ' + me.name); } };
-}
 (async function init() {
   App.boot = await api('/bootstrap');
-  let me = await resolveB24User();          // 1) авто-детект через портал
-  if (me) storeMe(me);
-  if (!me) me = loadStoredMe();             // 2) ранее сохранённый выбор
-  if (!me) me = await pickMe(false);        // 3) спросить один раз
-  App.me = me || { id: null, name: App.boot.me.name };
-  renderWho();
+  const u = await resolveB24User();
+  App.me = u || { id: null, name: App.boot.me.name };
+  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}`;
   window.addEventListener('hashchange', router);
   router();
 })();

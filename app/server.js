@@ -220,28 +220,6 @@ async function api(req, res, parts, query) {
     }
   }
 
-  // GET /api/crm/users — сотрудники портала (для выбора «кто я» и фильтра ответственного)
-  if (method === 'GET' && parts[1] === 'crm' && parts[2] === 'users') {
-    const fallback = [
-      { id: USERS.polina, name: 'Полина Базар' }, { id: USERS.nastasya, name: 'Настасья Бондаренко' },
-      { id: USERS.andrey, name: 'Андрей Шидловский' }, { id: USERS.sergey, name: 'Сергей Горелышев' },
-    ];
-    if (!CRM_LIVE) return sendJSON(res, 200, { source: 'demo', items: fallback });
-    try {
-      const resp = await vibeRequest('GET', '/users?limit=500&active=true&select=id,name,lastName');
-      const arr = Array.isArray(resp) ? resp : (resp && (resp.data || resp.items)) || [];
-      let items = (Array.isArray(arr) ? arr : []).map((u) => ({
-        id: u.id != null ? u.id : u.ID,
-        name: [u.name || u.NAME, u.lastName || u.LAST_NAME].filter(Boolean).join(' ').trim() || u.email || ('#' + (u.id || u.ID)),
-      })).filter((u) => u.id && u.name);
-      items.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-      if (!items.length) items = fallback;
-      return sendJSON(res, 200, { source: 'portal', items });
-    } catch (e) {
-      return sendJSON(res, 200, { source: 'demo', items: fallback, warning: String(e && e.message) });
-    }
-  }
-
   // ---------- CRM портала (компании / сделки) ----------
   // GET /api/crm/companies?q=
   if (method === 'GET' && parts[1] === 'crm' && parts[2] === 'companies') {
