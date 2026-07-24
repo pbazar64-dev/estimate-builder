@@ -36,6 +36,7 @@ button{font-family:inherit}
 .nav a:hover{color:var(--ink)}
 .top .who{margin-left:auto;font-size:11px;color:var(--ink-2);letter-spacing:.06em;text-align:right}
 .top .who b{color:var(--ink)}
+.top .who .wchg{color:var(--danger);border-bottom:1px solid rgba(122,46,46,.3);cursor:pointer}
 
 .wrap{max-width:1280px;margin:0 auto;padding:26px 28px 80px}
 .phead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px}
@@ -111,7 +112,7 @@ th.r,td.r{text-align:right}
 .aside{padding:22px 24px;display:flex;flex-direction:column;gap:14px}
 .bignum{font-family:var(--serif);font-size:40px;font-weight:800;line-height:.95}
 .bignum small{font-size:15px;color:var(--ink-2);font-weight:400}
-.vrow{display:grid;grid-template-columns:36px 1fr auto;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.vrow{display:grid;grid-template-columns:48px 1fr auto;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
 .vrow:last-child{border-bottom:0}
 .vrow .vn{font-family:var(--serif);font-size:20px;font-weight:700}
 .vrow .vn.cur{color:var(--danger)}
@@ -184,6 +185,24 @@ tr.filtrow th{padding:6px 8px;border-bottom:1px solid var(--line);background:#FC
 .payctl{display:flex;gap:8px;align-items:center;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);font-weight:700}
 .payctl select,.payctl input{padding:7px 10px;border:1px solid var(--line);background:var(--field);font-family:var(--sans);font-size:13px;color:var(--ink);text-transform:none;letter-spacing:0;font-weight:400;outline:none}
 .payctl select:focus,.payctl input:focus{border-color:var(--ink)}
+
+/* реестр: шестерёнка + попап фильтров/колонок */
+.btn.gear{font-size:15px;line-height:1;padding:9px 12px}
+.btn.gear.on{border-color:var(--ink);color:var(--ink);background:var(--field)}
+.filtpanel{position:absolute;right:0;top:calc(100% + 6px);background:#fff;border:1px solid var(--ink);z-index:40;width:280px;padding:14px 16px;box-shadow:0 10px 30px rgba(20,17,15,.14)}
+.filtpanel .fp-h{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);font-weight:700;margin-bottom:8px}
+.filtpanel .fp-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;font-size:13px}
+.filtpanel .fp-row>span{color:var(--ink-2);white-space:nowrap}
+.filtpanel .fp-row select,.filtpanel .fp-row input{flex:1;min-width:0;max-width:170px;padding:6px 8px;border:1px solid var(--line);background:var(--field);font-family:var(--sans);font-size:13px;color:var(--ink);outline:none}
+.filtpanel .fp-row select:focus,.filtpanel .fp-row input:focus{border-color:var(--ink)}
+.filtpanel .fp-cols{display:flex;flex-direction:column;gap:2px}
+.filtpanel .colopt{display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:13px;cursor:pointer}
+.filtpanel .colopt:hover{background:var(--field)}
+.filtpanel .fp-acts{display:flex;justify-content:space-between;gap:8px;margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+
+/* карточка: действующая версия — зелёный кружок */
+.vrow .vn{cursor:context-menu}
+.vrow .vn.active{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:42px;padding:0 8px;border:2px solid var(--ok);border-radius:999px;color:var(--ok);line-height:1}
 
 @media (max-width:820px){
   .stats,.countries{grid-template-columns:repeat(2,1fr)}

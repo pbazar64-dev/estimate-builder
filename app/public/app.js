@@ -4,22 +4,61 @@
 const App = { boot: null, estimate: null, saveTimer: null, me: null };
 const $ = (s, r = document) => r.querySelector(s);
 
-// Текущий пользователь Битрикс24 (через JS SDK портала). Нужен для авторства смет.
+// Текущий пользователь Битрикс24. Приоритет:
+// 1) авто-детект через JS SDK портала (BX24.callMethod user.current);
+// 2) ранее сохранённый выбор (localStorage);
+// 3) одноразовый выбор себя из списка сотрудников (запоминается).
+const LS_ME = 'eb_me_v1';
+function loadStoredMe() { try { const s = localStorage.getItem(LS_ME); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
+function storeMe(m) { try { localStorage.setItem(LS_ME, JSON.stringify(m)); } catch (e) {} }
 function resolveB24User() {
   return new Promise((resolve) => {
     if (typeof BX24 === 'undefined' || !BX24) return resolve(null);
     let done = false; const fin = (v) => { if (!done) { done = true; resolve(v); } };
-    setTimeout(() => fin(null), 4000);
+    const to = setTimeout(() => fin(null), 9000);
+    const parse = (u) => { const name = [u.NAME, u.LAST_NAME].filter(Boolean).join(' ').trim(); return { id: Number(u.ID) || null, name: name || u.EMAIL || null }; };
     try {
       BX24.init(function () {
         BX24.callMethod('user.current', {}, function (res) {
-          if (res.error && res.error()) return fin(null);
-          const u = res.data() || {};
-          const name = [u.NAME, u.LAST_NAME].filter(Boolean).join(' ').trim();
-          fin({ id: Number(u.ID) || null, name: name || u.EMAIL || null });
+          if (res && res.error && res.error()) {
+            // запасной вызов profile (доступен даже при user_brief)
+            BX24.callMethod('profile', {}, function (r2) {
+              clearTimeout(to);
+              if (r2 && r2.error && r2.error()) return fin(null);
+              const p = (r2 && r2.data && r2.data()) || {};
+              const name = [p.NAME, p.LAST_NAME].filter(Boolean).join(' ').trim();
+              fin(name || p.ID ? { id: Number(p.ID) || null, name: name || null } : null);
+            });
+            return;
+          }
+          clearTimeout(to);
+          fin(parse((res && res.data && res.data()) || {}));
         });
       });
-    } catch (e) { fin(null); }
+    } catch (e) { clearTimeout(to); fin(null); }
+  });
+}
+// Модальный выбор «кто я» из списка сотрудников портала (force=true — без «Пропустить»).
+async function pickMe(force) {
+  let users = [];
+  try { const r = await api('/crm/users'); users = r.items || []; } catch (e) {}
+  const cur = App.me && App.me.id;
+  return new Promise((resolve) => {
+    const m = document.createElement('div'); m.className = 'modal';
+    const opts = users.map(u => `<option value="${u.id}" data-name="${esc(u.name)}" ${u.id === cur ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
+    m.innerHTML = `<div class="box" style="width:min(440px,92vw)"><h3>Кто вы?</h3>
+      <div class="sub" style="margin-bottom:14px">Не удалось автоматически определить пользователя Битрикс24. Выберите себя — сметы будут сохраняться под вашим именем. Выбор запомнится (можно сменить в шапке).</div>
+      <div class="field"><label>Сотрудник</label><select id="pm_sel">${opts || '<option value="">— список недоступен —</option>'}</select></div>
+      <div class="acts">${force ? '' : '<button class="btn ghost" id="pm_skip">Позже</button>'}<button class="btn prim" id="pm_ok">Это я</button></div></div>`;
+    document.body.appendChild(m);
+    $('#pm_ok').onclick = () => {
+      const s = $('#pm_sel'), o = s.selectedOptions[0];
+      if (!s.value) { m.remove(); return resolve(null); }
+      const me = { id: Number(s.value) || null, name: o ? o.dataset.name : '' };
+      storeMe(me); m.remove(); resolve(me);
+    };
+    const skip = $('#pm_skip'); if (skip) skip.onclick = () => { m.remove(); resolve(null); };
+    m.onclick = (ev) => { if (ev.target === m && !force) { m.remove(); resolve(null); } };
   });
 }
 function author() {
@@ -235,64 +274,96 @@ const REG_COLS = [
   { key: 'status', label: 'Статус', status: true, get: e => e.launched ? 'Проект запущен' : 'Проект не запущен', cell: e => `<td>${launchTag(e.launched)}</td>` },
   { key: 'amount', label: 'Сумма', right: true, get: e => String(Math.round(e.totalAmount)), cell: e => `<td class="r num co">${fmt(e.totalAmount)} <span class="sub">${esc(e.currency)}</span></td>` },
 ];
-const regState = { hidden: new Set(), filters: {}, statusFilter: '', colPanel: false };
+const regState = { hidden: new Set(), panel: false, f: { responsible: '', dateFrom: '', dateTo: '', status: '' } };
 
 async function viewRegistry() {
   const app = $('#app');
   app.innerHTML = `<div class="phead"><div><span class="eyebrow">Реестр</span><h1>Все сметы компании</h1>
-    <p class="dek">Поиск и фильтры по колонкам. Нажмите на смету, чтобы открыть карточку и версии.</p></div>
+    <p class="dek">Поиск по названию и компании; фильтры и выбор колонок — по шестерёнке. Нажмите на смету, чтобы открыть карточку.</p></div>
     <button class="btn prim" id="newBtn">+ Новая смета</button></div>
     <div class="stats" id="stats"></div>
     <div class="toolbar">
-      <span class="search"><span>⌕</span><input id="q" placeholder="Общий поиск по названию и компании…"></span>
+      <span class="search"><span>⌕</span><input id="q" placeholder="Поиск по названию и компании…"></span>
       <div style="position:relative">
-        <button class="btn ghost" id="colBtn">Столбцы ▾</button>
-        <div id="colPanel" class="colpanel hide"></div>
+        <button class="btn ghost gear" id="gearBtn" title="Фильтры и колонки">⚙</button>
+        <div id="filtPanel" class="filtpanel hide"></div>
       </div>
-      <button class="btn ghost" id="filtClear">Сбросить фильтры</button>
+      <span class="sub" id="filtBadge"></span>
     </div>
     <div class="panel tblwrap"><table><thead id="thead"></thead><tbody id="rows"></tbody></table></div>`;
   $('#newBtn').onclick = openWizard;
   $('#q').oninput = () => render();
-  $('#filtClear').onclick = () => { regState.filters = {}; regState.statusFilter = ''; $('#q').value = ''; render(); };
-  $('#colBtn').onclick = () => { regState.colPanel = !regState.colPanel; renderColPanel(); };
+  $('#gearBtn').onclick = (ev) => { ev.stopPropagation(); regState.panel = !regState.panel; renderPanel(); };
+  document.addEventListener('click', closePanelOutside);
 
-  function renderColPanel() {
-    const p = $('#colPanel');
-    p.classList.toggle('hide', !regState.colPanel);
-    if (!regState.colPanel) return;
-    p.innerHTML = REG_COLS.map(c => `<label class="colopt"><input type="checkbox" data-col="${c.key}" ${regState.hidden.has(c.key) ? '' : 'checked'}> ${esc(c.label)}</label>`).join('');
+  function closePanelOutside(ev) {
+    if (!regState.panel) return;
+    const p = $('#filtPanel'); if (p && !p.contains(ev.target) && ev.target.id !== 'gearBtn') { regState.panel = false; p.classList.add('hide'); }
+  }
+
+  let all = [];
+  function responsibles() { return [...new Set(all.map(e => e.responsible).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')); }
+  function activeFilterCount() {
+    const f = regState.f; let n = 0;
+    if (f.responsible) n++; if (f.status) n++; if (f.dateFrom || f.dateTo) n++;
+    return n;
+  }
+  function renderPanel() {
+    const p = $('#filtPanel');
+    p.classList.toggle('hide', !regState.panel);
+    if (!regState.panel) return;
+    const f = regState.f;
+    const respOpts = ['<option value="">Все</option>'].concat(responsibles().map(r => `<option value="${esc(r)}" ${f.responsible === r ? 'selected' : ''}>${esc(r)}</option>`)).join('');
+    p.innerHTML = `
+      <div class="fp-h">Фильтры</div>
+      <label class="fp-row"><span>Ответственный</span><select id="fp_resp">${respOpts}</select></label>
+      <label class="fp-row"><span>Статус</span><select id="fp_status">
+        <option value="">Все</option>
+        <option value="launched" ${f.status === 'launched' ? 'selected' : ''}>Проект запущен</option>
+        <option value="not" ${f.status === 'not' ? 'selected' : ''}>Проект не запущен</option></select></label>
+      <label class="fp-row"><span>Изменена с</span><input type="date" id="fp_from" value="${esc(f.dateFrom)}"></label>
+      <label class="fp-row"><span>по</span><input type="date" id="fp_to" value="${esc(f.dateTo)}"></label>
+      <div class="fp-h" style="margin-top:12px">Показать колонки</div>
+      <div class="fp-cols">${REG_COLS.map(c => `<label class="colopt"><input type="checkbox" data-col="${c.key}" ${regState.hidden.has(c.key) ? '' : 'checked'}> ${esc(c.label)}</label>`).join('')}</div>
+      <div class="fp-acts"><button class="btn sm ghost" id="fp_reset">Сбросить всё</button><button class="btn sm" id="fp_done">Готово</button></div>`;
+    $('#fp_resp').onchange = () => { f.responsible = $('#fp_resp').value; render(); };
+    $('#fp_status').onchange = () => { f.status = $('#fp_status').value; render(); };
+    $('#fp_from').onchange = () => { f.dateFrom = $('#fp_from').value; render(); };
+    $('#fp_to').onchange = () => { f.dateTo = $('#fp_to').value; render(); };
     p.querySelectorAll('[data-col]').forEach(cb => cb.onchange = () => {
       if (cb.checked) regState.hidden.delete(cb.dataset.col); else regState.hidden.add(cb.dataset.col);
       render();
     });
+    $('#fp_reset').onclick = () => { regState.hidden = new Set(); regState.f = { responsible: '', dateFrom: '', dateTo: '', status: '' }; $('#q').value = ''; render(); renderPanel(); };
+    $('#fp_done').onclick = () => { regState.panel = false; p.classList.add('hide'); };
   }
 
-  let all = [];
-  async function load() {
-    all = await api('/estimates');
-    render();
-  }
+  async function load() { all = await api('/estimates'); render(); }
   function visibleCols() { return REG_COLS.filter(c => !regState.hidden.has(c.key)); }
   function applyFilters(items) {
-    const gq = $('#q').value.trim().toLowerCase();
+    const gq = $('#q').value.trim().toLowerCase(), f = regState.f;
     return items.filter(e => {
       if (gq && !((e.title || '') + ' ' + (e.company || '')).toLowerCase().includes(gq)) return false;
-      for (const c of REG_COLS) {
-        if (c.status) {
-          if (regState.statusFilter && (e.launched ? 'launched' : 'not') !== regState.statusFilter) return false;
-        } else {
-          const f = (regState.filters[c.key] || '').trim().toLowerCase();
-          if (f && !String(c.get(e)).toLowerCase().includes(f)) return false;
-        }
-      }
+      if (f.responsible && (e.responsible || '') !== f.responsible) return false;
+      if (f.status && (e.launched ? 'launched' : 'not') !== f.status) return false;
+      const d = (e.updatedAt || '').slice(0, 10);
+      if (f.dateFrom && (!d || d < f.dateFrom)) return false;
+      if (f.dateTo && (!d || d > f.dateTo)) return false;
       return true;
+    });
+  }
+  function bindRows() {
+    $('#rows').querySelectorAll('.rowlink').forEach(tr => tr.onclick = () => location.hash = '#/e/' + tr.dataset.id);
+    $('#rows').querySelectorAll('[data-del-est]').forEach(x => x.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('Удалить смету? Действие необратимо.')) return;
+      await api('/estimates/' + x.dataset.delEst, { method: 'DELETE' });
+      toast('Смета удалена'); load();
     });
   }
   function render() {
     const cols = visibleCols();
     const items = applyFilters(all);
-    // статистика
     const sum = items.reduce((a, e) => a + e.totalAmount, 0);
     const launched = items.filter(e => e.launched).length;
     const avg = items.length ? Math.round(sum / items.length) : 0;
@@ -301,53 +372,15 @@ async function viewRegistry() {
       <div class="stat"><div class="k">Запущенных проектов</div><div class="v tnum">${launched}</div></div>
       <div class="stat"><div class="k">Средняя сумма</div><div class="v tnum">${fmt(avg)}</div></div>
       <div class="stat"><div class="k">Сумма портфеля</div><div class="v tnum">${fmt(sum)}</div></div>`;
-    // шапка + строка фильтров
-    const headCells = cols.map(c => `<th class="${c.right ? 'r' : ''}">${esc(c.label)}</th>`).join('') + '<th></th>';
-    const filtCells = cols.map(c => {
-      if (c.status) {
-        return `<th><select class="fcol" data-fs="1">
-          <option value="">Все</option>
-          <option value="launched" ${regState.statusFilter === 'launched' ? 'selected' : ''}>Проект запущен</option>
-          <option value="not" ${regState.statusFilter === 'not' ? 'selected' : ''}>Проект не запущен</option></select></th>`;
-      }
-      return `<th><input class="fcol" data-fk="${c.key}" placeholder="фильтр…" value="${esc(regState.filters[c.key] || '')}"></th>`;
-    }).join('') + '<th></th>';
-    $('#thead').innerHTML = `<tr>${headCells}</tr><tr class="filtrow">${filtCells}</tr>`;
-    // строки
+    const fc = activeFilterCount();
+    $('#gearBtn').classList.toggle('on', fc > 0 || regState.hidden.size > 0);
+    $('#filtBadge').textContent = fc ? ('Активных фильтров: ' + fc) : '';
+    $('#thead').innerHTML = `<tr>${cols.map(c => `<th class="${c.right ? 'r' : ''}">${esc(c.label)}</th>`).join('')}<th></th></tr>`;
     $('#rows').innerHTML = items.map(e => `<tr class="rowlink" data-id="${e.id}">
       ${cols.map(c => c.cell(e)).join('')}
       <td class="r"><span class="del" data-del-est="${e.id}" title="Удалить смету">✕</span></td></tr>`).join('')
       || `<tr><td colspan="${cols.length + 1}" class="sub" style="padding:20px">Смет не найдено.</td></tr>`;
-    $('#rows').querySelectorAll('.rowlink').forEach(tr => tr.onclick = () => location.hash = '#/e/' + tr.dataset.id);
-    $('#rows').querySelectorAll('[data-del-est]').forEach(x => x.onclick = async (ev) => {
-      ev.stopPropagation();
-      const id = x.dataset.delEst;
-      if (!confirm('Удалить смету? Действие необратимо.')) return;
-      await api('/estimates/' + id, { method: 'DELETE' });
-      toast('Смета удалена'); load();
-    });
-    // фильтры колонок (сохраняем фокус между перерисовками)
-    $('#thead').querySelectorAll('input.fcol').forEach(inp => {
-      inp.oninput = () => {
-        regState.filters[inp.dataset.fk] = inp.value;
-        const items2 = applyFilters(all);
-        renderBodyOnly(items2, cols);
-      };
-    });
-    $('#thead').querySelectorAll('select.fcol').forEach(sel => sel.onchange = () => { regState.statusFilter = sel.value; render(); });
-  }
-  function renderBodyOnly(items, cols) {
-    $('#rows').innerHTML = items.map(e => `<tr class="rowlink" data-id="${e.id}">
-      ${cols.map(c => c.cell(e)).join('')}
-      <td class="r"><span class="del" data-del-est="${e.id}" title="Удалить смету">✕</span></td></tr>`).join('')
-      || `<tr><td colspan="${cols.length + 1}" class="sub" style="padding:20px">Смет не найдено.</td></tr>`;
-    $('#rows').querySelectorAll('.rowlink').forEach(tr => tr.onclick = () => location.hash = '#/e/' + tr.dataset.id);
-    $('#rows').querySelectorAll('[data-del-est]').forEach(x => x.onclick = async (ev) => {
-      ev.stopPropagation();
-      if (!confirm('Удалить смету? Действие необратимо.')) return;
-      await api('/estimates/' + x.dataset.delEst, { method: 'DELETE' });
-      toast('Смета удалена'); load();
-    });
+    bindRows();
   }
   load();
 }
@@ -469,11 +502,10 @@ async function viewCard(id) {
   const verRows = e.versions.slice().reverse().map((v) => {
     const isActive = activeNum ? v.number === activeNum : false;
     return `<div class="vrow">
-    <div class="vn ${isActive ? 'cur' : ''} serif">v${v.number}${isActive ? ' <span class="tag t-ok" style="vertical-align:middle;font-size:8px;padding:2px 6px">действующая</span>' : ''}</div>
+    <div class="vn serif ${isActive ? 'active' : ''}" data-setv="${v.number}" title="${isActive ? 'Действующая версия' : 'Правый клик — сделать действующей'}">v${v.number}</div>
     <div><div class="co">${esc(v.comment || '—')}</div><div class="sub">${esc((v.createdAt || '').slice(0, 10))} · ${esc(v.author)} · ${money(v.totalAmount, v.currency)}${v.basedOn ? ' · на базе v' + v.basedOn : ''}</div></div>
     <div class="vacts">
       <button class="btn sm ghost" data-editv="${v.number}" title="Редактировать эту версию в конструкторе">✎ Правка</button>
-      ${isActive ? '' : `<button class="btn sm ghost" data-actv="${v.number}" title="Сделать действующей версией">Сделать актуальной</button>`}
       <button class="btn sm ghost" data-act="excel" data-v="${v.number}">Excel</button>
       <button class="btn sm ghost" data-act="kp" data-v="${v.number}">КП</button>
       <button class="btn sm ghost" data-act="contract" data-v="${v.number}">Договор</button>
@@ -507,7 +539,7 @@ async function viewCard(id) {
     </div>
     ${paymentSectionHtml(e, activeSnap)}
     <div class="phead" style="margin-top:34px"><div><span class="eyebrow">Версии</span>
-      <p class="dek" style="margin-top:4px">Нажмите «Правка», чтобы открыть любую версию в конструкторе — изменения сохранятся как новая версия. «Сделать актуальной» — выбрать действующую версию.</p></div></div>
+      <p class="dek" style="margin-top:4px">Действующая версия обведена зелёным кружком. Правый клик по номеру версии — сделать её действующей (может быть только одна). «Правка» — открыть версию в конструкторе; изменения сохранятся как новая версия.</p></div></div>
     <div class="panel" style="padding:8px 24px">${verRows}</div>`;
 
   wirePaymentSection(e, () => activeSnap);
@@ -517,9 +549,13 @@ async function viewCard(id) {
     await api('/estimates/' + e.id + '/edit-version', { method: 'POST', body: JSON.stringify({ number: Number(b.dataset.editv) }) });
     toast('Версия v' + b.dataset.editv + ' открыта для правки'); location.hash = '#/edit/' + e.id;
   });
-  $('#app').querySelectorAll('[data-actv]').forEach(b => b.onclick = async () => {
-    await api('/estimates/' + e.id + '/versions/' + b.dataset.actv + '/activate', { method: 'POST', body: JSON.stringify({}) });
-    toast('Версия v' + b.dataset.actv + ' — действующая'); viewCard(e.id);
+  // правый клик по номеру версии — сделать действующей
+  $('#app').querySelectorAll('[data-setv]').forEach(el => el.oncontextmenu = async (ev) => {
+    ev.preventDefault();
+    const num = Number(el.dataset.setv);
+    if (num === activeNum) { toast('Версия v' + num + ' уже действующая'); return; }
+    await api('/estimates/' + e.id + '/versions/' + num + '/activate', { method: 'POST', body: JSON.stringify({}) });
+    toast('Версия v' + num + ' — действующая'); viewCard(e.id);
   });
   $('#app').querySelectorAll('[data-act]').forEach(b => b.onclick = () => docAction(b.dataset.act, e, Number(b.dataset.v)));
 }
@@ -1052,11 +1088,18 @@ function openContract(e) {
 }
 
 /* ---------- Bootstrap ---------- */
+function renderWho() {
+  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)} · <span class="wchg" id="whoChange">сменить</span>`;
+  const wc = $('#whoChange'); if (wc) wc.onclick = async () => { const me = await pickMe(true); if (me) { App.me = me; renderWho(); toast('Вы вошли как ' + me.name); } };
+}
 (async function init() {
   App.boot = await api('/bootstrap');
-  const u = await resolveB24User();
-  App.me = u || { id: null, name: App.boot.me.name };
-  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}`;
+  let me = await resolveB24User();          // 1) авто-детект через портал
+  if (me) storeMe(me);
+  if (!me) me = loadStoredMe();             // 2) ранее сохранённый выбор
+  if (!me) me = await pickMe(false);        // 3) спросить один раз
+  App.me = me || { id: null, name: App.boot.me.name };
+  renderWho();
   window.addEventListener('hashchange', router);
   router();
 })();
