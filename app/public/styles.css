@@ -180,6 +180,11 @@ tr.filtrow th{padding:6px 8px;border-bottom:1px solid var(--line);background:#FC
 .clink{color:var(--danger);border-bottom:1px solid rgba(122,46,46,.3);cursor:pointer}
 .clink:hover{border-bottom-color:var(--danger)}
 
+/* график платежей — контролы */
+.payctl{display:flex;gap:8px;align-items:center;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);font-weight:700}
+.payctl select,.payctl input{padding:7px 10px;border:1px solid var(--line);background:var(--field);font-family:var(--sans);font-size:13px;color:var(--ink);text-transform:none;letter-spacing:0;font-weight:400;outline:none}
+.payctl select:focus,.payctl input:focus{border-color:var(--ink)}
+
 @media (max-width:820px){
   .stats,.countries{grid-template-columns:repeat(2,1fr)}
   .grid2,.catgrid{grid-template-columns:1fr}

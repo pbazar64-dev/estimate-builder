@@ -414,6 +414,14 @@ async function api(req, res, parts, query) {
       persist();
       return sendJSON(res, 200, { ok: true });
     }
+    // POST /api/estimates/:id/payment — параметры графика платежей
+    if (method === 'POST' && sub === 'payment') {
+      const b = await readBody(req);
+      e.payment = { mode: b.mode || null, signDate: b.signDate || null };
+      e.updatedAt = new Date().toISOString();
+      persist();
+      return sendJSON(res, 200, { ok: true, payment: e.payment });
+    }
     // PATCH /api/estimates/:id/status
     if (method === 'POST' && sub === 'status') {
       const b = await readBody(req);

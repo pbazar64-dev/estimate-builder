@@ -101,6 +101,114 @@ function recalc(draft, rate) {
   return { amountById, lineHours, baseSum, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, pmFactor: PM_FACTOR };
 }
 
+/* ---------- График платежей ----------
+   Варианты: staged «Поэтапно», 5050 «50 на 50», prepay «Предоплата».
+   Если этап один — доступны prepay и 5050; иначе staged и 5050. */
+function parseDate(s) { if (!s) return null; const p = String(s).slice(0, 10).split('-'); return p.length === 3 ? new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])) : null; }
+function isoDate(d) { return d ? d.toISOString().slice(0, 10) : ''; }
+function addWorkingDaysC(date, days) {
+  if (!date) return null;
+  const d = new Date(date.getTime()); let added = 0;
+  while (added < days) { d.setUTCDate(d.getUTCDate() + 1); const wd = d.getUTCDay(); if (wd !== 0 && wd !== 6) added++; }
+  return d;
+}
+function dayWord(n) { const a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 20) return 'дней'; if (b === 1) return 'день'; if (b > 1 && b < 5) return 'дня'; return 'дней'; }
+function fmtDateRu(d) { return d ? String(d.getUTCDate()).padStart(2, '0') + '.' + String(d.getUTCMonth() + 1).padStart(2, '0') + '.' + d.getUTCFullYear() : '—'; }
+function paymentOptions(n) {
+  return n <= 1
+    ? [{ id: 'prepay', name: 'Предоплата' }, { id: '5050', name: '50 на 50' }]
+    : [{ id: 'staged', name: 'Поэтапно' }, { id: '5050', name: '50 на 50' }];
+}
+// snapshot = {stages, lines}; payment = {mode, signDate}
+function paymentSchedule(snapshot, rate, payment) {
+  const r = recalc(snapshot, rate);
+  const enabled = (snapshot.stages || []).filter(s => s.on).sort((a, b) => a.order - b.order);
+  const amounts = enabled.map(s => r.stageTotals[s.code] || 0);
+  const n = enabled.length, total = r.total, dur = r.durationDays;
+  const opts = paymentOptions(n);
+  let mode = (payment && payment.mode) || opts[0].id;
+  if (!opts.some(o => o.id === mode)) mode = opts[0].id;
+  const sign = parseDate(payment && payment.signDate);
+  const ceilD = (x) => Math.ceil(x - 1e-9);
+  const termPrev = (days) => `${days} рабочих ${dayWord(days)} с момента предыдущей оплаты`;
+  const AVANS_TERM = '3 банковских дня с момента подписания';
+  const rows = [];
+  if (mode === 'prepay') {
+    rows.push({ no: 1, name: 'Предоплата', sum: Math.round(total), term: AVANS_TERM, date: addWorkingDaysC(sign, 3), docs: 'Акт' });
+  } else if (mode === '5050') {
+    const p1 = Math.round(total * 0.5), p2 = Math.round(total) - p1;
+    const d1 = addWorkingDaysC(sign, 3), d2 = d1 ? addWorkingDaysC(d1, dur) : null;
+    rows.push({ no: 1, name: 'Аванс', sum: p1, term: AVANS_TERM, date: d1, docs: 'Акт' });
+    rows.push({ no: 2, name: 'Окончательный расчёт', sum: p2, term: termPrev(dur), date: d2, docs: 'Акт' });
+  } else { // staged
+    const p1 = Math.round(total * 0.5);
+    const d1 = addWorkingDaysC(sign, 3);
+    rows.push({ no: 1, name: 'Аванс', sum: p1, term: AVANS_TERM, date: d1, docs: 'Акт' });
+    // 2-й платёж: сумма 2-го этапа − аванс + сумма 1-го этапа
+    let prevSum = p1, prevDate = d1;
+    if (n >= 2) {
+      const t2 = ceilD(prevSum / rate / 3);
+      const d2 = prevDate ? addWorkingDaysC(prevDate, t2) : null;
+      const s2 = (amounts[1] || 0) - p1 + (amounts[0] || 0);
+      rows.push({ no: 2, name: 'Доплата за этап 2', sum: s2, term: termPrev(t2), date: d2, docs: 'Акт' });
+      prevSum = s2; prevDate = d2;
+    }
+    // платежи 3..n: равны сумме соответствующего этапа
+    for (let k = 3; k <= n; k++) {
+      const tk = ceilD(prevSum / rate / 3);
+      const dk = prevDate ? addWorkingDaysC(prevDate, tk) : null;
+      const sk = amounts[k - 1] || 0;
+      rows.push({ no: k, name: 'Предоплата за этап ' + k, sum: sk, term: termPrev(tk), date: dk, docs: 'Акт' });
+      prevSum = sk; prevDate = dk;
+    }
+  }
+  return { mode, options: opts, rows, stagesCount: n, hasSign: !!sign };
+}
+function estimateSnapshot(e) {
+  const num = e.summary ? e.summary.activeVersion : null;
+  const v = num ? (e.versions || []).find(x => x.number === num) : null;
+  return (v && v.snapshot) ? v.snapshot : e.draft;
+}
+function payRowsHtml(sched, currency) {
+  return sched.rows.map(p => `<tr>
+    <td class="tnum">${p.no}</td>
+    <td class="co">${esc(p.name)}</td>
+    <td class="r num co">${p.sum != null ? fmt(p.sum) + ' ' + esc(currency) : '—'}</td>
+    <td class="sub">${esc(p.term)}</td>
+    <td class="tnum">${p.date ? fmtDateRu(p.date) : '<span class="sub">укажите дату</span>'}</td>
+    <td>${esc(p.docs)}</td></tr>`).join('')
+    || '<tr><td colspan="6" class="sub" style="padding:14px">Нет активных этапов для расчёта платежей.</td></tr>';
+}
+function paymentSectionHtml(e, snapshot) {
+  const sched = paymentSchedule(snapshot, e.rate, e.payment);
+  const opts = sched.options.map(o => `<option value="${o.id}" ${o.id === sched.mode ? 'selected' : ''}>${esc(o.name)}</option>`).join('');
+  const signVal = (e.payment && e.payment.signDate) ? String(e.payment.signDate).slice(0, 10) : '';
+  return `<div class="panel" style="margin-top:20px">
+    <div class="stagebar" style="gap:16px;flex-wrap:wrap">
+      <span class="eyebrow" style="margin-right:auto">График платежей</span>
+      <label class="payctl">Вариант
+        <select id="pay_mode">${opts}</select></label>
+      <label class="payctl">Ориент. дата подписания договора
+        <input type="date" id="pay_date" value="${signVal}"></label>
+    </div>
+    <div class="tblwrap"><table><thead><tr>
+      <th style="width:52px">№ п/п</th><th>Наименование</th><th class="r">Сумма</th><th>Срок</th><th>Ориент. дата</th><th>Документы</th>
+    </tr></thead><tbody id="pay_rows">${payRowsHtml(sched, e.currency)}</tbody></table></div>
+  </div>`;
+}
+function wirePaymentSection(e, getSnapshot) {
+  const modeSel = $('#pay_mode'), dateInp = $('#pay_date');
+  if (!modeSel) return;
+  const refresh = () => { const sched = paymentSchedule(getSnapshot(), e.rate, e.payment); $('#pay_rows').innerHTML = payRowsHtml(sched, e.currency); };
+  const save = async () => {
+    e.payment = { mode: modeSel.value, signDate: dateInp.value || null };
+    refresh();
+    try { await api('/estimates/' + e.id + '/payment', { method: 'POST', body: JSON.stringify(e.payment) }); } catch (x) {}
+  };
+  modeSel.onchange = save;
+  dateInp.onchange = save;
+}
+
 /* ---------- Роутер ---------- */
 function router() {
   const h = location.hash.replace(/^#\/?/, '');
@@ -397,10 +505,12 @@ async function viewCard(id) {
         ${e.launch && e.launch.specUrl ? `<a class="link" href="${esc(e.launch.specUrl)}" target="_blank" style="text-align:center">Спецификация #${esc(e.launch.specId)} · задач: ${e.launch.tasksCreated}</a>` : ''}
       </div>
     </div>
+    ${paymentSectionHtml(e, activeSnap)}
     <div class="phead" style="margin-top:34px"><div><span class="eyebrow">Версии</span>
       <p class="dek" style="margin-top:4px">Нажмите «Правка», чтобы открыть любую версию в конструкторе — изменения сохранятся как новая версия. «Сделать актуальной» — выбрать действующую версию.</p></div></div>
     <div class="panel" style="padding:8px 24px">${verRows}</div>`;
 
+  wirePaymentSection(e, () => activeSnap);
   $('#editBtn').onclick = () => location.hash = '#/edit/' + e.id;
   const lb = $('#launchBtn'); if (lb) lb.onclick = () => openLaunchModal(e);
   $('#app').querySelectorAll('[data-editv]').forEach(b => b.onclick = async () => {
@@ -521,11 +631,13 @@ function renderEditor() {
         <span><span class="eyebrow">Срок</span> <b class="tnum" style="font-size:20px">${r.durationDays} дн.</b></span>
         <span class="sub" style="flex:1;text-align:right">Стоимость = Ставка × Часы клиента × Кол-во</span>
       </div>
-    </div>`;
+    </div>
+    ${paymentSectionHtml(e, e.draft)}`;
 
   $('#backBtn').onclick = () => location.hash = '#/e/' + e.id;
   $('#saveVer').onclick = saveVersion;
   $('#fromCat').onclick = openCatalogPicker;
+  wirePaymentSection(e, () => e.draft);
   $('#app').querySelectorAll('[data-stage]').forEach(p => p.onclick = () => { const s = e.draft.stages.find(x => x.code === p.dataset.stage); s.on = !s.on; scheduleSave(); renderEditor(); });
   $('#app').querySelectorAll('[data-add]').forEach(b => b.onclick = () => addLine(b.dataset.add));
   $('#app').querySelectorAll('[data-del]').forEach(b => b.onclick = () => delLine(b.dataset.del));
@@ -591,6 +703,8 @@ function liveTotals() {
   // формула-услуги (авто-часы)
   $('#app').querySelectorAll('[data-eff-exec]').forEach(sp => { const h = r.lineHours[sp.dataset.effExec]; if (h) sp.textContent = h.exec + ' 🔒'; });
   $('#app').querySelectorAll('[data-eff-client]').forEach(sp => { const h = r.lineHours[sp.dataset.effClient]; if (h) sp.textContent = h.client + ' 🔒'; });
+  // график платежей (пересчёт по текущему черновику)
+  const pr = $('#pay_rows'); if (pr) pr.innerHTML = payRowsHtml(paymentSchedule(e.draft, e.rate, e.payment), e.currency);
 }
 function nid(p) { return p + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3); }
 function addLine(stage) {
@@ -725,11 +839,12 @@ async function viewSettings() {
 
 /* ---------- Генерация документов (Excel/КП/Договор) ---------- */
 function clientRows(e) {
-  // клиентское представление: по этапам, без часов, только стоимость
-  const r = recalc(e.draft, e.rate);
+  // клиентское представление: по этапам, без часов, только стоимость (по действующей версии)
+  const snap = estimateSnapshot(e);
+  const r = recalc(snap, e.rate);
   const out = [];
-  e.draft.stages.filter(s => s.on).sort((a, b) => a.order - b.order).forEach((s, si) => {
-    const lines = e.draft.lines.filter(l => l.stage === s.code);
+  snap.stages.filter(s => s.on).sort((a, b) => a.order - b.order).forEach((s, si) => {
+    const lines = snap.lines.filter(l => l.stage === s.code);
     out.push({ no: `${si + 1}`, name: stageTitle(s.code), amount: r.stageTotals[s.code] || 0, lvl: 1 });
     const tops = lines.filter(l => l.parentId == null);
     tops.forEach((l, li) => {
@@ -767,20 +882,42 @@ function _zip(files) {
 }
 function _xe(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function _col(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = (i - (m + 1)) / 26; } return s; }
-// Стили ячеек (borderId=1 — тонкие рамки со всех сторон; wrap; Calibri 11).
-// Индексы соответствуют cellXfs. b=bold, h=гориз., v=вертик. выравнивание.
+// JS-дата → серийный номер Excel (день 0 = 1899-12-30)
+function _serial(d) { return Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - Date.UTC(1899, 11, 30)) / 86400000); }
+// Стили ячеек. nf=числовой формат (0 General, 3 «#,##0», 164 дата mm-dd-yy),
+// f=шрифт (0 Calibri11, 1 Calibri11ж, 2 Times11, 3 Times11ж, 4 Times9ж),
+// b=рамка (1 тонкая, 2 средняя), h/v=выравнивание. Смета — Calibri/тонкие,
+// график платежей — Times/средние (как в образце).
 const XL_STYLES = [
-  { b: 0, h: 'left', v: 'top' },      // 0 — наименование/описание (обычн.)
-  { b: 0, h: 'center', v: 'top' },    // 1 — № (обычн.)
-  { b: 0, h: 'center', v: 'center' }, // 2 — кол-во/стоимость (обычн.)
-  { b: 1, h: 'center', v: 'center' }, // 3 — шапка/сумма этапа/итог (жирн.)
-  { b: 1, h: 'center', v: 'top' },    // 4 — № шапки/этапа (жирн.)
-  { b: 1, h: 'left', v: 'top' },      // 5 — название этапа (жирн.)
-  { b: 1, h: 'right', v: 'center' },  // 6 — «ИТОГО» (жирн., по правому краю)
+  { nf: 0, f: 0, b: 1, h: 'left', v: 'top' },      // 0 — наименование/описание
+  { nf: 0, f: 0, b: 1, h: 'center', v: 'top' },    // 1 — №
+  { nf: 0, f: 0, b: 1, h: 'center', v: 'center' }, // 2 — кол-во/стоимость
+  { nf: 0, f: 1, b: 1, h: 'center', v: 'center' }, // 3 — шапка/сумма этапа/итог
+  { nf: 0, f: 1, b: 1, h: 'center', v: 'top' },    // 4 — № шапки/этапа
+  { nf: 0, f: 1, b: 1, h: 'left', v: 'top' },      // 5 — название этапа
+  { nf: 0, f: 1, b: 1, h: 'right', v: 'center' },  // 6 — «ИТОГО»
+  { nf: 0, f: 3, b: 2, h: 'justify', v: 'center' }, // 7 — платежи: шапка (Times11ж)
+  { nf: 0, f: 4, b: 2, h: 'justify', v: 'center' }, // 8 — платежи: шапка «дата» (Times9ж)
+  { nf: 0, f: 2, b: 2, h: 'justify', v: 'center' }, // 9 — платежи: текст
+  { nf: 3, f: 2, b: 2, h: 'justify', v: 'center' }, // 10 — платежи: сумма #,##0
+  { nf: 164, f: 2, b: 2, h: 'center', v: 'center' }, // 11 — платежи: дата mm-dd-yy
 ];
 function _stylesXml() {
-  const xf = XL_STYLES.map((s) => `<xf numFmtId="0" fontId="${s.b ? 1 : 0}" fillId="0" borderId="1" xfId="0" applyBorder="1" applyFont="1" applyAlignment="1"><alignment horizontal="${s.h}" vertical="${s.v}" wrapText="1"/></xf>`).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${XL_STYLES.length}">${xf}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  const numFmts = '<numFmts count="1"><numFmt numFmtId="164" formatCode="mm-dd-yy"/></numFmts>';
+  const fonts = '<fonts count="5">'
+    + '<font><sz val="11"/><name val="Calibri"/><family val="2"/></font>'
+    + '<font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font>'
+    + '<font><sz val="11"/><name val="Times New Roman"/><family val="1"/></font>'
+    + '<font><b/><sz val="11"/><name val="Times New Roman"/><family val="1"/></font>'
+    + '<font><b/><sz val="9"/><name val="Times New Roman"/><family val="1"/></font>'
+    + '</fonts>';
+  const borders = '<borders count="3">'
+    + '<border><left/><right/><top/><bottom/><diagonal/></border>'
+    + '<border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border>'
+    + '<border><left style="medium"/><right style="medium"/><top style="medium"/><bottom style="medium"/><diagonal/></border>'
+    + '</borders>';
+  const xf = XL_STYLES.map((s) => `<xf numFmtId="${s.nf}" fontId="${s.f}" fillId="0" borderId="${s.b}" xfId="0" applyNumberFormat="1" applyBorder="1" applyFont="1" applyAlignment="1"><alignment horizontal="${s.h}" vertical="${s.v}" wrapText="1"/></xf>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${numFmts}${fonts}<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>${borders}<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${XL_STYLES.length}">${xf}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
 }
 function _sheet(rows, opts) {
   opts = opts || {};
@@ -836,9 +973,32 @@ function exportXLSX(e) {
   out.push([S('ИТОГО', 6), B(6), B(6), B(6), N(total, 3)]);
   merges.push('A' + tn + ':D' + tn);
 
+  // --- График платежей (Times New Roman, средние рамки), колонки G..L, ниже сметы ---
+  const sched = paymentSchedule(estimateSnapshot(e), e.rate, e.payment);
+  const PS = (v, s) => ({ v, t: 's', s });
+  const PN = (v, s) => ({ v: Math.round(v), t: 'n', s });
+  const PBl = (s) => ({ v: '', s });
+  const PD = (d, s) => (d ? { v: _serial(d), t: 'n', s } : { v: '', s });
+  const G = 6; // индекс колонки G (A=0)
+  out.push([]); // строка-разделитель между сметой и графиком
+  const hdr = [];
+  hdr[G] = PS('№ п/п', 7); hdr[G + 1] = PS('Наименование', 7); hdr[G + 2] = PS('Сумма, рублей.', 7);
+  hdr[G + 3] = PS('Срок', 7); hdr[G + 4] = PS('Ориентировочная дата', 8); hdr[G + 5] = PS('Документы', 7);
+  out.push(hdr);
+  sched.rows.forEach((p) => {
+    const row = [];
+    row[G] = PN(p.no, 9);
+    row[G + 1] = PS(p.name, 9);
+    row[G + 2] = (p.sum != null) ? PN(p.sum, 10) : PBl(10);
+    row[G + 3] = PS(p.term, 9);
+    row[G + 4] = p.date ? PD(p.date, 11) : PBl(11);
+    row[G + 5] = PS(p.docs, 9);
+    out.push(row);
+  });
+
   const fname = (e.title ? e.title.replace(/[\\/:*?"<>|]+/g, ' ').trim() : ('Смета_' + e.id)) || ('Смета_' + e.id);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(_xlsx(out, { widths: [3.7, 21, 27.3, 7, 10.3], merges }));
+  a.href = URL.createObjectURL(_xlsx(out, { widths: [3.7, 21, 27.3, 7, 10.3, 8.9, 6.2, 20.7, 8.9, 23.9, 15.4, 12.2], merges }));
   a.download = fname + '.xlsx'; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   toast('Excel (.xlsx) выгружен');
