@@ -127,11 +127,17 @@ async function oauthRoute(req, res, pathname, query) {
       dbg.resolved = user;
       lastOauthDebug = dbg;
       const sid = crypto.randomBytes(24).toString('hex');
-      oauthSessions.set(sid, { session, user, exp: Date.now() + 8 * 3600 * 1000 });
-      // Пробрасываем и в куке, и во фрагменте URL (на случай блокировки сторонних кук в iframe)
-      const frag = '#uid=' + encodeURIComponent((user && user.id) || '') + '&uname=' + encodeURIComponent((user && user.name) || '') + '&sid=' + sid;
-      res.writeHead(302, { 'Set-Cookie': cookieHeader('eb_sid', sid, 8 * 3600), Location: '/?auth=ok' + frag });
-      return res.end();
+      oauthSessions.set(sid, { session, user, exp: Date.now() + 30 * 24 * 3600 * 1000 });
+      // Работает и как popup (postMessage в opener + закрытие), и как полная страница (redirect).
+      const payload = JSON.stringify({ uid: (user && user.id) || null, uname: (user && user.name) || null, sid });
+      const html = '<!doctype html><meta charset="utf-8"><body style="font:14px sans-serif;padding:24px">'
+        + '<script>(function(){var d=' + payload + ';'
+        + 'try{if(d.sid)localStorage.setItem("eb_sid",d.sid);}catch(e){}'
+        + 'if(window.opener){try{window.opener.postMessage({ebAuth:d},"*");}catch(e){}document.body.textContent="Готово. Можно закрыть окно.";setTimeout(function(){window.close();},100);}'
+        + 'else{location.replace("/?auth=ok#uid="+encodeURIComponent(d.uid||"")+"&uname="+encodeURIComponent(d.uname||"")+"&sid="+(d.sid||""));}})();</script>'
+        + 'Готово…</body>';
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Set-Cookie': cookieHeader('eb_sid', sid, 30 * 24 * 3600) });
+      return res.end(html);
     } catch (e) {
       dbg.error = String(e && e.message); lastOauthDebug = dbg;
       res.writeHead(302, { Location: '/?auth=err&reason=exchange' }); return res.end();
@@ -327,7 +333,7 @@ async function api(req, res, parts, query) {
     const cookies = parseCookies(req);
     const sid = cookies.eb_sid || req.headers['x-eb-sid'] || query.sid || '';
     const s = sid && oauthSessions.get(sid);
-    if (s && s.exp > Date.now()) return sendJSON(res, 200, { user: s.user || null, hasSession: true });
+    if (s && s.exp > Date.now()) { s.exp = Date.now() + 30 * 24 * 3600 * 1000; return sendJSON(res, 200, { user: s.user || null, hasSession: true }); }
     return sendJSON(res, 200, { user: null, needsAuth: OAUTH_ENABLED, loginUrl: '/oauth/login' });
   }
   // GET /api/oauth-debug — санитизированная диагностика последнего OAuth-колбэка (без токенов)

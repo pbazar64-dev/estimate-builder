@@ -1074,16 +1074,35 @@ async function resolveIdentity() {
   }
   try {
     const w = await api('/whoami');
-    if (w && w.user && w.user.name) { try { sessionStorage.removeItem('eb_authtry'); } catch (e) {} return { id: w.user.id, name: w.user.name }; }
-    if (w && w.needsAuth) {
-      let tried = false; try { tried = !!sessionStorage.getItem('eb_authtry'); } catch (e) {}
-      if (!tried) { try { sessionStorage.setItem('eb_authtry', '1'); } catch (e) {} location.href = w.loginUrl; return new Promise(() => {}); }
-    }
+    if (w && w.user && w.user.name) return { id: w.user.id, name: w.user.name };
+    // needsAuth: НЕ редиректим iframe (страница авторизации портала блокируется X-Frame-Options).
+    // Идентификация — по кнопке «определить» через popup-окно (см. openAuthPopup).
   } catch (e) {}
   const u = await resolveB24User();
   if (u) return u;
   return { id: null, name: App.boot.me.name };
 }
+function whoHtml() {
+  const detLink = App.me && App.me.id ? '' : ' · <span class="wchg" id="whoDet">определить</span>';
+  return `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}${detLink}`;
+}
+function renderWho() {
+  $('#who').innerHTML = whoHtml();
+  const wd = $('#whoDet'); if (wd) wd.onclick = openAuthPopup;
+}
+function openAuthPopup() {
+  const w = 520, h = 680, y = (screen.height - h) / 2, x = (screen.width - w) / 2;
+  const p = window.open('/oauth/login', 'ebauth', `width=${w},height=${h},left=${x},top=${y}`);
+  if (!p) { toast('Разрешите всплывающие окна для определения пользователя'); }
+}
+// Приём результата авторизации из popup-окна
+window.addEventListener('message', (e) => {
+  const d = e.data && e.data.ebAuth;
+  if (!d) return;
+  if (d.sid) { try { localStorage.setItem('eb_sid', d.sid); } catch (x) {} }
+  if (d.uname) { App.me = { id: d.uid ? (Number(d.uid) || d.uid) : null, name: d.uname }; renderWho(); toast('Вы вошли как ' + d.uname); }
+  else { toast('Сессия создана, но имя не получено. Сообщите разработчику (нужна 1 правка)'); }
+});
 function authStatusFromUrl() {
   const m = (location.search || '').match(/[?&]auth=([^&]+)/);
   if (!m) return null;
@@ -1094,9 +1113,7 @@ function authStatusFromUrl() {
   App.boot = await api('/bootstrap');
   const authStatus = authStatusFromUrl();
   App.me = await resolveIdentity();
-  const detLink = App.me.id ? '' : ' · <span class="wchg" id="whoDet">определить</span>';
-  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}${detLink}`;
-  const wd = $('#whoDet'); if (wd) wd.onclick = () => { try { sessionStorage.removeItem('eb_authtry'); localStorage.removeItem('eb_sid'); } catch (e) {} location.href = '/oauth/login'; };
+  renderWho();
   window.addEventListener('hashchange', router);
   router();
   if (authStatus && authStatus.status === 'err') { toast('Определение пользователя не удалось (' + (authStatus.reason || 'ошибка') + ')'); try { history.replaceState(null, '', location.pathname); } catch (e) {} }
