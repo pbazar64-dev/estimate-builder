@@ -75,6 +75,17 @@ function extractUser(o) {
   return { id: id != null ? (Number(id) || id) : null, name: name || ('#' + id) };
 }
 let lastOauthDebug = null; // санитизированная диагностика (без токенов/сессий)
+let lastReqHeaders = null;  // заголовки последнего /api/bootstrap (шлюз может прокидывать пользователя)
+const SECRET_HEADERS = new Set(['authorization', 'cookie', 'x-api-key', 'x-eb-sid']);
+function sanitizeHeaders(h) {
+  const out = {};
+  for (const k of Object.keys(h || {})) {
+    const lk = k.toLowerCase();
+    if (SECRET_HEADERS.has(lk)) { out[k] = '<masked>'; continue; }
+    out[k] = h[k];
+  }
+  return out;
+}
 // Разрешить текущего пользователя по сессии Vibecode (несколько источников — платформа/шейпы разнятся)
 async function resolveSessionUser(session, dbg) {
   const H = { 'X-Api-Key': VIBE_APP_KEY, Authorization: 'Bearer ' + session };
@@ -318,6 +329,7 @@ async function api(req, res, parts, query) {
 
   // GET /api/bootstrap
   if (method === 'GET' && parts[1] === 'bootstrap') {
+    lastReqHeaders = { at: new Date().toISOString(), method, url: req.url, headers: sanitizeHeaders(req.headers) };
     return sendJSON(res, 200, {
       me: { name: 'Пользователь Битрикс24', role: 'user', portal: 'avrika.bitrix24.ru' },
       countries: store.countries, stages: store.stages, catalog: store.catalog,
@@ -338,6 +350,8 @@ async function api(req, res, parts, query) {
   }
   // GET /api/oauth-debug — санитизированная диагностика последнего OAuth-колбэка (без токенов)
   if (method === 'GET' && parts[1] === 'oauth-debug') return sendJSON(res, 200, lastOauthDebug || { none: true });
+  // GET /api/req-headers — заголовки последнего входящего /api/bootstrap (диагностика прокидывания пользователя шлюзом)
+  if (method === 'GET' && parts[1] === 'req-headers') return sendJSON(res, 200, lastReqHeaders || { none: true });
 
   // GET /api/launch-meta — данные для формы «Запустить проект»
   if (method === 'GET' && parts[1] === 'launch-meta') {
