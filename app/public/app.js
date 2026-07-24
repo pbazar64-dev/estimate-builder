@@ -767,45 +767,79 @@ function _zip(files) {
 }
 function _xe(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function _col(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = (i - (m + 1)) / 26; } return s; }
-function _sheet(rows, widths) {
+// Стили ячеек (borderId=1 — тонкие рамки со всех сторон; wrap; Calibri 11).
+// Индексы соответствуют cellXfs. b=bold, h=гориз., v=вертик. выравнивание.
+const XL_STYLES = [
+  { b: 0, h: 'left', v: 'top' },      // 0 — наименование/описание (обычн.)
+  { b: 0, h: 'center', v: 'top' },    // 1 — № (обычн.)
+  { b: 0, h: 'center', v: 'center' }, // 2 — кол-во/стоимость (обычн.)
+  { b: 1, h: 'center', v: 'center' }, // 3 — шапка/сумма этапа/итог (жирн.)
+  { b: 1, h: 'center', v: 'top' },    // 4 — № шапки/этапа (жирн.)
+  { b: 1, h: 'left', v: 'top' },      // 5 — название этапа (жирн.)
+  { b: 1, h: 'right', v: 'center' },  // 6 — «ИТОГО» (жирн., по правому краю)
+];
+function _stylesXml() {
+  const xf = XL_STYLES.map((s) => `<xf numFmtId="0" fontId="${s.b ? 1 : 0}" fillId="0" borderId="1" xfId="0" applyBorder="1" applyFont="1" applyAlignment="1"><alignment horizontal="${s.h}" vertical="${s.v}" wrapText="1"/></xf>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${XL_STYLES.length}">${xf}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+}
+function _sheet(rows, opts) {
+  opts = opts || {};
   let body = '';
   rows.forEach((cells, ri) => {
     const r = ri + 1; let rc = '';
     cells.forEach((cell, ci) => {
-      if (!cell || cell.v === '' || cell.v == null) return;
-      const ref = _col(ci) + r, s = cell.bold ? 2 : 1;
+      if (!cell) return; // ячейки нет вовсе → без рамки
+      const ref = _col(ci) + r, s = cell.s || 0;
+      if (cell.v === '' || cell.v == null) { rc += `<c r="${ref}" s="${s}"/>`; return; } // пустая, но с рамкой
       rc += cell.t === 'n' ? `<c r="${ref}" s="${s}"><v>${cell.v}</v></c>`
         : `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${_xe(cell.v)}</t></is></c>`;
     });
     body += `<row r="${r}">${rc}</row>`;
   });
-  const cols = widths ? `<cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${cols}<sheetData>${body}</sheetData></worksheet>`;
+  const cols = opts.widths ? `<cols>${opts.widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
+  const merges = (opts.merges && opts.merges.length) ? `<mergeCells count="${opts.merges.length}">${opts.merges.map((m) => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>` : '';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${cols}<sheetData>${body}</sheetData>${merges}</worksheet>`;
 }
-const _STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyBorder="1" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
-function _xlsx(rows, widths) {
+function _xlsx(rows, opts) {
   return _zip([
     { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>` },
     { name: '_rels/.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
     { name: 'xl/workbook.xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Смета" sheetId="1" r:id="rId1"/></sheets></workbook>` },
     { name: 'xl/_rels/workbook.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
-    { name: 'xl/styles.xml', data: _STYLES },
-    { name: 'xl/worksheets/sheet1.xml', data: _sheet(rows, widths) },
+    { name: 'xl/styles.xml', data: _stylesXml() },
+    { name: 'xl/worksheets/sheet1.xml', data: _sheet(rows, opts) },
   ]);
 }
 function exportXLSX(e) {
   const { rows, total } = clientRows(e);
-  const T = (v, bold = false) => ({ v, t: 's', bold });
-  const N = (v, bold = false) => ({ v: Math.round(v), t: 'n', bold });
-  const out = [[T('№', true), T('Наименование', true), T('Описание', true), T('Кол-во', true), T('Стоимость', true), T('Валюта', true)]];
-  rows.forEach(r => {
-    const bold = r.lvl === 1;
-    out.push([T(r.no, bold), T(r.name, bold), T(r.desc || '', bold), (r.qty == null || bold) ? null : N(r.qty), N(r.amount, bold), T(e.currency, bold)]);
+  const S = (v, s) => ({ v, t: 's', s });          // текст
+  const N = (v, s) => ({ v: Math.round(v), t: 'n', s }); // число (General)
+  const B = (s) => ({ v: '', s });                  // пустая ячейка с рамкой
+  const out = [];
+  const merges = [];
+  // шапка
+  out.push([S('№', 4), S('Этап/задача', 3), S('Описание', 3), S('Кол-во', 3), S('Стоимость', 3)]);
+  rows.forEach((r) => {
+    const rn = out.length + 1; // текущий номер строки Excel
+    if (r.lvl === 1) {
+      // строка этапа: № жирн., название (B:C объединено), стоимость жирн.; кол-во/описание пусты, но с рамками
+      out.push([S(r.no, 4), S(r.name, 5), B(5), B(2), N(r.amount, 3)]);
+      merges.push('B' + rn + ':C' + rn);
+    } else {
+      // строка услуги/группы: № центр, наименование и описание слева, кол-во и стоимость по центру
+      const noQty = (r.qty == null || r.grp);
+      out.push([S(r.no, 1), S(r.name, 0), S(r.desc || '', 0), noQty ? B(2) : N(r.qty, 2), N(r.amount, 2)]);
+    }
   });
-  out.push([null, T('ИТОГО', true), null, null, N(total, true), T(e.currency, true)]);
+  // ИТОГО (A:D объединено, по правому краю)
+  const tn = out.length + 1;
+  out.push([S('ИТОГО', 6), B(6), B(6), B(6), N(total, 3)]);
+  merges.push('A' + tn + ':D' + tn);
+
+  const fname = (e.title ? e.title.replace(/[\\/:*?"<>|]+/g, ' ').trim() : ('Смета_' + e.id)) || ('Смета_' + e.id);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(_xlsx(out, [10, 46, 60, 9, 15, 9]));
-  a.download = `Смета_${e.id}.xlsx`; a.click();
+  a.href = URL.createObjectURL(_xlsx(out, { widths: [3.7, 21, 27.3, 7, 10.3], merges }));
+  a.download = fname + '.xlsx'; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   toast('Excel (.xlsx) выгружен');
 }
