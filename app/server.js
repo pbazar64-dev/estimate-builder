@@ -4,6 +4,7 @@
 
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS } = require('./seed');
@@ -19,6 +20,109 @@ const DATA_FILE = path.join(__dirname, 'data', 'store.json');
 const VIBE_BASE = process.env.VIBE_API_BASE || 'https://vibecode.bitrix24.tech/v1';
 const VIBE_KEY = process.env.VIBE_API_KEY || '';
 const CRM_LIVE = /^vibe_api_/.test(VIBE_KEY);
+
+// ---------- Идентификация пользователя через OAuth-сессию (vibe_app_*) ----------
+// Используется ТОЛЬКО чтобы узнать, кто сейчас в приложении (автор/ответственный).
+// CRM-операции остаются на персональном ключе VIBE_API_KEY.
+const VIBE_APP_KEY = process.env.VIBE_APP_KEY || '';
+const OAUTH_ENABLED = /^vibe_app_/.test(VIBE_APP_KEY);
+const oauthSessions = new Map(); // sid -> { session, user, exp }
+const oauthStates = new Map();   // state -> exp
+const _oauthCleanup = setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of oauthSessions) if (v.exp < now) oauthSessions.delete(k);
+  for (const [k, v] of oauthStates) if (v < now) oauthStates.delete(k);
+}, 300000);
+if (_oauthCleanup.unref) _oauthCleanup.unref();
+
+function httpsJson(method, fullUrl, headers, body) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(fullUrl);
+    const payload = body ? JSON.stringify(body) : null;
+    const req = https.request({
+      method, hostname: u.hostname, path: u.pathname + u.search,
+      headers: Object.assign({ Accept: 'application/json' }, headers || {},
+        payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+      timeout: 15000,
+    }, (r) => { let d = ''; r.on('data', (c) => d += c); r.on('end', () => { let j = null; try { j = JSON.parse(d); } catch {} resolve({ status: r.statusCode, json: j, raw: d }); }); });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+function parseCookies(req) {
+  const h = req.headers.cookie || ''; const o = {};
+  h.split(';').forEach((p) => { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); });
+  return o;
+}
+function cookieHeader(name, val, maxAge) {
+  return `${name}=${encodeURIComponent(val)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=None`;
+}
+const APP_PUBLIC_URL = (process.env.APP_PUBLIC_URL || '').replace(/\/+$/, '');
+function publicOrigin(req) {
+  if (APP_PUBLIC_URL) return APP_PUBLIC_URL; // зафиксированный публичный URL = зарегистрированный redirect_uri
+  const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  return `${proto}://${host}`;
+}
+function extractUser(o) {
+  if (!o || typeof o !== 'object') return null;
+  const id = o.id != null ? o.id : (o.ID != null ? o.ID : (o.userId != null ? o.userId : (o.USER_ID != null ? o.USER_ID : null)));
+  const name = [o.name || o.NAME || o.firstName || o.first_name, o.lastName || o.LAST_NAME || o.last_name].filter(Boolean).join(' ').trim()
+    || o.fullName || o.FULL_NAME || o.title || o.email || o.EMAIL || null;
+  if (id == null && !name) return null;
+  return { id: id != null ? (Number(id) || id) : null, name: name || ('#' + id) };
+}
+// Разрешить текущего пользователя по сессии Vibecode (несколько источников — платформа/шейпы разнятся)
+async function resolveSessionUser(session) {
+  const H = { 'X-Api-Key': VIBE_APP_KEY, Authorization: 'Bearer ' + session };
+  const tries = ['/me', '/users/current', '/user/current', '/profile'];
+  for (const p of tries) {
+    try {
+      const r = await httpsJson('GET', VIBE_BASE + p, H);
+      const d = (r.json && (r.json.data !== undefined ? r.json.data : r.json)) || {};
+      const u = extractUser(d.user || d.currentUser || d.profile || d);
+      if (u && (u.id != null || u.name)) return u;
+    } catch (e) { /* следующий источник */ }
+  }
+  return null;
+}
+async function oauthRoute(req, res, pathname, query) {
+  const redirectUri = publicOrigin(req) + '/oauth/callback';
+  if (pathname === '/oauth/login') {
+    if (!OAUTH_ENABLED) { res.writeHead(302, { Location: '/?auth=disabled' }); return res.end(); }
+    const state = crypto.randomBytes(16).toString('hex');
+    oauthStates.set(state, Date.now() + 600000);
+    const auth = `${VIBE_BASE}/oauth/authorize?app_key=${encodeURIComponent(VIBE_APP_KEY)}&state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+    res.writeHead(302, { 'Set-Cookie': cookieHeader('eb_ostate', state, 600), Location: auth });
+    return res.end();
+  }
+  if (pathname === '/oauth/callback') {
+    const code = query.code, state = query.state, cookies = parseCookies(req);
+    if (!code || !state || !oauthStates.has(state) || (cookies.eb_ostate && cookies.eb_ostate !== state)) {
+      res.writeHead(302, { Location: '/?auth=err&reason=state' }); return res.end();
+    }
+    oauthStates.delete(state);
+    try {
+      const tok = await httpsJson('POST', `${VIBE_BASE}/oauth/token`, { 'X-Api-Key': VIBE_APP_KEY }, { app_key: VIBE_APP_KEY, code, redirect_uri: redirectUri });
+      const td = (tok.json && (tok.json.data !== undefined ? tok.json.data : tok.json)) || {};
+      const session = td.session || td.token || td.access_token || td.sessionToken || td.accessToken;
+      if (!session) { res.writeHead(302, { Location: '/?auth=err&reason=token' }); return res.end(); }
+      let user = extractUser(td.user || td.currentUser);
+      if (!user) user = await resolveSessionUser(session);
+      const sid = crypto.randomBytes(24).toString('hex');
+      oauthSessions.set(sid, { session, user, exp: Date.now() + 8 * 3600 * 1000 });
+      // Пробрасываем и в куке, и во фрагменте URL (на случай блокировки сторонних кук в iframe)
+      const frag = '#uid=' + encodeURIComponent((user && user.id) || '') + '&uname=' + encodeURIComponent((user && user.name) || '') + '&sid=' + sid;
+      res.writeHead(302, { 'Set-Cookie': cookieHeader('eb_sid', sid, 8 * 3600), Location: '/?auth=ok' + frag });
+      return res.end();
+    } catch (e) {
+      res.writeHead(302, { Location: '/?auth=err&reason=exchange' }); return res.end();
+    }
+  }
+  res.writeHead(404); res.end('not found');
+}
 
 function vibeRequest(method, apiPath, body) {
   return new Promise((resolve, reject) => {
@@ -201,6 +305,15 @@ async function api(req, res, parts, query) {
 
   // GET /api/health
   if (parts[1] === 'health') return sendJSON(res, 200, { ok: true, ts: Date.now() });
+
+  // GET /api/whoami — текущий пользователь по OAuth-сессии (куки eb_sid или заголовок X-EB-SID)
+  if (method === 'GET' && parts[1] === 'whoami') {
+    const cookies = parseCookies(req);
+    const sid = cookies.eb_sid || req.headers['x-eb-sid'] || query.sid || '';
+    const s = sid && oauthSessions.get(sid);
+    if (s && s.exp > Date.now()) return sendJSON(res, 200, { user: s.user || null, hasSession: true });
+    return sendJSON(res, 200, { user: null, needsAuth: OAUTH_ENABLED, loginUrl: '/oauth/login' });
+  }
 
   // GET /api/launch-meta — данные для формы «Запустить проект»
   if (method === 'GET' && parts[1] === 'launch-meta') {
@@ -571,6 +684,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const query = Object.fromEntries(u.searchParams.entries());
+    if (u.pathname.startsWith('/oauth/')) return await oauthRoute(req, res, u.pathname, query);
     if (u.pathname.startsWith('/api/')) {
       const parts = u.pathname.split('/').filter(Boolean); // ['api', ...]
       return await api(req, res, parts, query);

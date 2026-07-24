@@ -26,7 +26,11 @@ function author() {
   return (App.me && (App.me.id || App.me.name)) ? { id: App.me.id, name: App.me.name } : undefined;
 }
 function portalBase() { return 'https://' + ((App.boot && App.boot.me && App.boot.me.portal) || 'avrika.bitrix24.ru'); }
-const api = (url, opts) => fetch('/api' + url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts)).then(r => r.json());
+const api = (url, opts) => {
+  const headers = { 'Content-Type': 'application/json' };
+  try { const sid = localStorage.getItem('eb_sid'); if (sid) headers['X-EB-SID'] = sid; } catch (e) {}
+  return fetch('/api' + url, Object.assign({ headers }, opts)).then(r => r.json());
+};
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmt = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(Number(n) || 0));
 const money = (n, cur) => fmt(n) + ' ' + (cur || '');
@@ -1049,10 +1053,40 @@ function openContract(e) {
 }
 
 /* ---------- Bootstrap ---------- */
+// Чтение результата OAuth-колбэка из фрагмента URL (#uid&uname&sid)
+function readAuthFragment() {
+  const h = location.hash || '';
+  if (h.indexOf('uid=') < 0 && h.indexOf('uname=') < 0) return null;
+  const p = new URLSearchParams(h.replace(/^#/, ''));
+  return { uid: p.get('uid'), uname: p.get('uname'), sid: p.get('sid') };
+}
+function cleanAuthUrl() {
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  try { sessionStorage.removeItem('eb_authtry'); } catch (e) {}
+}
+// Определение текущего пользователя: OAuth-сессия портала → whoami → BX24 → дефолт.
+async function resolveIdentity() {
+  const frag = readAuthFragment();
+  if (frag && (frag.uid || frag.uname)) {
+    try { if (frag.sid) localStorage.setItem('eb_sid', frag.sid); } catch (e) {}
+    cleanAuthUrl();
+    if (frag.uname) return { id: frag.uid ? (Number(frag.uid) || frag.uid) : null, name: decodeURIComponent(frag.uname) };
+  }
+  try {
+    const w = await api('/whoami');
+    if (w && w.user && w.user.name) { try { sessionStorage.removeItem('eb_authtry'); } catch (e) {} return { id: w.user.id, name: w.user.name }; }
+    if (w && w.needsAuth) {
+      let tried = false; try { tried = !!sessionStorage.getItem('eb_authtry'); } catch (e) {}
+      if (!tried) { try { sessionStorage.setItem('eb_authtry', '1'); } catch (e) {} location.href = w.loginUrl; return new Promise(() => {}); }
+    }
+  } catch (e) {}
+  const u = await resolveB24User();
+  if (u) return u;
+  return { id: null, name: App.boot.me.name };
+}
 (async function init() {
   App.boot = await api('/bootstrap');
-  const u = await resolveB24User();
-  App.me = u || { id: null, name: App.boot.me.name };
+  App.me = await resolveIdentity();
   $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}`;
   window.addEventListener('hashchange', router);
   router();
