@@ -1,21 +1,36 @@
 'use strict';
 /* Конструктор смет — клиентская логика (vanilla JS, без сборки). */
 
-const App = { boot: null, estimate: null, saveTimer: null };
+const App = { boot: null, estimate: null, saveTimer: null, me: null };
 const $ = (s, r = document) => r.querySelector(s);
+
+// Текущий пользователь Битрикс24 (через JS SDK портала). Нужен для авторства смет.
+function resolveB24User() {
+  return new Promise((resolve) => {
+    if (typeof BX24 === 'undefined' || !BX24) return resolve(null);
+    let done = false; const fin = (v) => { if (!done) { done = true; resolve(v); } };
+    setTimeout(() => fin(null), 4000);
+    try {
+      BX24.init(function () {
+        BX24.callMethod('user.current', {}, function (res) {
+          if (res.error && res.error()) return fin(null);
+          const u = res.data() || {};
+          const name = [u.NAME, u.LAST_NAME].filter(Boolean).join(' ').trim();
+          fin({ id: Number(u.ID) || null, name: name || u.EMAIL || null });
+        });
+      });
+    } catch (e) { fin(null); }
+  });
+}
+function author() {
+  return (App.me && (App.me.id || App.me.name)) ? { id: App.me.id, name: App.me.name } : undefined;
+}
+function portalBase() { return 'https://' + ((App.boot && App.boot.me && App.boot.me.portal) || 'avrika.bitrix24.ru'); }
 const api = (url, opts) => fetch('/api' + url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts)).then(r => r.json());
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmt = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(Number(n) || 0));
 const money = (n, cur) => fmt(n) + ' ' + (cur || '');
 
-const STATUS = {
-  draft: ['Черновик', 't-draft'], on_approval: ['На согласовании', 't-warn'],
-  approved: ['Согласована', 't-ok'], rejected: ['Отклонена', 't-dg'],
-  kp_ready: ['КП сформировано', 't-ink'], contract_ready: ['Договор', 't-ink'],
-  signed: ['Подписан', 't-ok'], archived: ['Архив', 't-draft'],
-  launched: ['Проект запущен', 't-ok'],
-};
-const statusTag = (s) => { const x = STATUS[s] || [s, 't-draft']; return `<span class="tag ${x[1]}">${esc(x[0])}</span>`; };
 const stageTitle = (code) => (App.boot.stages.find(s => s.code === code) || {}).title || code;
 
 function toast(msg) {
@@ -99,42 +114,130 @@ function router() {
 }
 
 /* ---------- Реестр ---------- */
+const launchTag = (launched) => launched
+  ? '<span class="tag t-ok">Проект запущен</span>'
+  : '<span class="tag t-draft">Проект не запущен</span>';
+// Колонки реестра (без ID). get — значение для фильтра/сортировки, cell — разметка ячейки.
+const REG_COLS = [
+  { key: 'title', label: 'Название', get: e => e.title || '', cell: e => `<td class="co">${esc(e.title)}</td>` },
+  { key: 'company', label: 'Компания', get: e => e.company || '', cell: e => `<td>${e.company ? esc(e.company) : '<span class="sub">—</span>'}</td>` },
+  { key: 'responsible', label: 'Ответственный', get: e => e.responsible || '', cell: e => `<td>${esc(e.responsible || '—')}</td>` },
+  { key: 'updatedAt', label: 'Изменена', get: e => (e.updatedAt || '').slice(0, 10), cell: e => `<td class="sub">${esc((e.updatedAt || '').slice(0, 10))}</td>` },
+  { key: 'version', label: 'Версия', get: e => e.currentVersion ? 'v' + e.currentVersion : '', cell: e => `<td class="tnum">${e.currentVersion ? 'v' + e.currentVersion : '—'}</td>` },
+  { key: 'status', label: 'Статус', status: true, get: e => e.launched ? 'Проект запущен' : 'Проект не запущен', cell: e => `<td>${launchTag(e.launched)}</td>` },
+  { key: 'amount', label: 'Сумма', right: true, get: e => String(Math.round(e.totalAmount)), cell: e => `<td class="r num co">${fmt(e.totalAmount)} <span class="sub">${esc(e.currency)}</span></td>` },
+];
+const regState = { hidden: new Set(), filters: {}, statusFilter: '', colPanel: false };
+
 async function viewRegistry() {
   const app = $('#app');
   app.innerHTML = `<div class="phead"><div><span class="eyebrow">Реестр</span><h1>Все сметы компании</h1>
-    <p class="dek">Поиск, фильтры, статусы. Нажмите на смету, чтобы открыть карточку и версии.</p></div>
+    <p class="dek">Поиск и фильтры по колонкам. Нажмите на смету, чтобы открыть карточку и версии.</p></div>
     <button class="btn prim" id="newBtn">+ Новая смета</button></div>
     <div class="stats" id="stats"></div>
-    <div class="toolbar"><span class="search"><span>⌕</span><input id="q" placeholder="Поиск по названию или компании…"></span></div>
-    <div class="panel tblwrap"><table><thead><tr>
-      <th>ID</th><th>Название</th><th>Компания</th><th>Ответственный</th><th>Изменена</th><th>Верс.</th><th>Статус</th><th class="r">Сумма</th><th></th>
-    </tr></thead><tbody id="rows"></tbody></table></div>`;
+    <div class="toolbar">
+      <span class="search"><span>⌕</span><input id="q" placeholder="Общий поиск по названию и компании…"></span>
+      <div style="position:relative">
+        <button class="btn ghost" id="colBtn">Столбцы ▾</button>
+        <div id="colPanel" class="colpanel hide"></div>
+      </div>
+      <button class="btn ghost" id="filtClear">Сбросить фильтры</button>
+    </div>
+    <div class="panel tblwrap"><table><thead id="thead"></thead><tbody id="rows"></tbody></table></div>`;
   $('#newBtn').onclick = openWizard;
-  $('#q').oninput = () => load();
+  $('#q').oninput = () => render();
+  $('#filtClear').onclick = () => { regState.filters = {}; regState.statusFilter = ''; $('#q').value = ''; render(); };
+  $('#colBtn').onclick = () => { regState.colPanel = !regState.colPanel; renderColPanel(); };
+
+  function renderColPanel() {
+    const p = $('#colPanel');
+    p.classList.toggle('hide', !regState.colPanel);
+    if (!regState.colPanel) return;
+    p.innerHTML = REG_COLS.map(c => `<label class="colopt"><input type="checkbox" data-col="${c.key}" ${regState.hidden.has(c.key) ? '' : 'checked'}> ${esc(c.label)}</label>`).join('');
+    p.querySelectorAll('[data-col]').forEach(cb => cb.onchange = () => {
+      if (cb.checked) regState.hidden.delete(cb.dataset.col); else regState.hidden.add(cb.dataset.col);
+      render();
+    });
+  }
+
+  let all = [];
   async function load() {
-    const q = $('#q').value.trim();
-    const items = await api('/estimates' + (q ? ('?q=' + encodeURIComponent(q)) : ''));
+    all = await api('/estimates');
+    render();
+  }
+  function visibleCols() { return REG_COLS.filter(c => !regState.hidden.has(c.key)); }
+  function applyFilters(items) {
+    const gq = $('#q').value.trim().toLowerCase();
+    return items.filter(e => {
+      if (gq && !((e.title || '') + ' ' + (e.company || '')).toLowerCase().includes(gq)) return false;
+      for (const c of REG_COLS) {
+        if (c.status) {
+          if (regState.statusFilter && (e.launched ? 'launched' : 'not') !== regState.statusFilter) return false;
+        } else {
+          const f = (regState.filters[c.key] || '').trim().toLowerCase();
+          if (f && !String(c.get(e)).toLowerCase().includes(f)) return false;
+        }
+      }
+      return true;
+    });
+  }
+  function render() {
+    const cols = visibleCols();
+    const items = applyFilters(all);
+    // статистика
     const sum = items.reduce((a, e) => a + e.totalAmount, 0);
-    const onAppr = items.filter(e => e.status === 'on_approval').length;
+    const launched = items.filter(e => e.launched).length;
     const avg = items.length ? Math.round(sum / items.length) : 0;
     $('#stats').innerHTML = `
       <div class="stat"><div class="k">Всего смет</div><div class="v tnum">${items.length}</div></div>
-      <div class="stat"><div class="k">На согласовании</div><div class="v tnum">${onAppr}</div></div>
+      <div class="stat"><div class="k">Запущенных проектов</div><div class="v tnum">${launched}</div></div>
       <div class="stat"><div class="k">Средняя сумма</div><div class="v tnum">${fmt(avg)}</div></div>
       <div class="stat"><div class="k">Сумма портфеля</div><div class="v tnum">${fmt(sum)}</div></div>`;
+    // шапка + строка фильтров
+    const headCells = cols.map(c => `<th class="${c.right ? 'r' : ''}">${esc(c.label)}</th>`).join('') + '<th></th>';
+    const filtCells = cols.map(c => {
+      if (c.status) {
+        return `<th><select class="fcol" data-fs="1">
+          <option value="">Все</option>
+          <option value="launched" ${regState.statusFilter === 'launched' ? 'selected' : ''}>Проект запущен</option>
+          <option value="not" ${regState.statusFilter === 'not' ? 'selected' : ''}>Проект не запущен</option></select></th>`;
+      }
+      return `<th><input class="fcol" data-fk="${c.key}" placeholder="фильтр…" value="${esc(regState.filters[c.key] || '')}"></th>`;
+    }).join('') + '<th></th>';
+    $('#thead').innerHTML = `<tr>${headCells}</tr><tr class="filtrow">${filtCells}</tr>`;
+    // строки
     $('#rows').innerHTML = items.map(e => `<tr class="rowlink" data-id="${e.id}">
-      <td class="sub tnum">${esc(e.id)}</td><td class="co">${esc(e.title)}</td><td>${e.company ? esc(e.company) : '<span class="sub">—</span>'}</td>
-      <td>${esc(e.responsible)}</td><td class="sub">${esc((e.updatedAt || '').slice(0, 10))}</td>
-      <td class="tnum">v${e.currentVersion}</td><td>${statusTag(e.status)}</td>
-      <td class="r num co">${fmt(e.totalAmount)} <span class="sub">${esc(e.currency)}</span></td>
+      ${cols.map(c => c.cell(e)).join('')}
       <td class="r"><span class="del" data-del-est="${e.id}" title="Удалить смету">✕</span></td></tr>`).join('')
-      || `<tr><td colspan="9" class="sub" style="padding:20px">Смет не найдено.</td></tr>`;
+      || `<tr><td colspan="${cols.length + 1}" class="sub" style="padding:20px">Смет не найдено.</td></tr>`;
     $('#rows').querySelectorAll('.rowlink').forEach(tr => tr.onclick = () => location.hash = '#/e/' + tr.dataset.id);
     $('#rows').querySelectorAll('[data-del-est]').forEach(x => x.onclick = async (ev) => {
       ev.stopPropagation();
       const id = x.dataset.delEst;
-      if (!confirm('Удалить смету ' + id + '? Действие необратимо.')) return;
+      if (!confirm('Удалить смету? Действие необратимо.')) return;
       await api('/estimates/' + id, { method: 'DELETE' });
+      toast('Смета удалена'); load();
+    });
+    // фильтры колонок (сохраняем фокус между перерисовками)
+    $('#thead').querySelectorAll('input.fcol').forEach(inp => {
+      inp.oninput = () => {
+        regState.filters[inp.dataset.fk] = inp.value;
+        const items2 = applyFilters(all);
+        renderBodyOnly(items2, cols);
+      };
+    });
+    $('#thead').querySelectorAll('select.fcol').forEach(sel => sel.onchange = () => { regState.statusFilter = sel.value; render(); });
+  }
+  function renderBodyOnly(items, cols) {
+    $('#rows').innerHTML = items.map(e => `<tr class="rowlink" data-id="${e.id}">
+      ${cols.map(c => c.cell(e)).join('')}
+      <td class="r"><span class="del" data-del-est="${e.id}" title="Удалить смету">✕</span></td></tr>`).join('')
+      || `<tr><td colspan="${cols.length + 1}" class="sub" style="padding:20px">Смет не найдено.</td></tr>`;
+    $('#rows').querySelectorAll('.rowlink').forEach(tr => tr.onclick = () => location.hash = '#/e/' + tr.dataset.id);
+    $('#rows').querySelectorAll('[data-del-est]').forEach(x => x.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('Удалить смету? Действие необратимо.')) return;
+      await api('/estimates/' + x.dataset.delEst, { method: 'DELETE' });
       toast('Смета удалена'); load();
     });
   }
@@ -231,7 +334,7 @@ async function openWizard() {
     }
     const name = $('#w_title').value.trim() || state.dealTitle || 'Новая смета';
     const title = companyTitle ? (companyTitle + ' — ' + name) : name;
-    const body = { title, companyId: state.companyId, company: companyTitle, dealId: state.dealId, dealTitle: state.dealTitle, countryId: sel };
+    const body = { title, companyId: state.companyId, company: companyTitle, dealId: state.dealId, dealTitle: state.dealTitle, countryId: sel, author: author() };
     const e = await api('/estimates', { method: 'POST', body: JSON.stringify(body) });
     m.remove(); toast('Смета создана'); location.hash = '#/edit/' + e.id;
   };
@@ -243,22 +346,38 @@ async function viewCard(id) {
   if (e.error) { $('#app').innerHTML = '<p>Смета не найдена.</p>'; return; }
   App.estimate = e;
   const r = e.computed;
-  const cur = e.versions.length ? e.versions[e.versions.length - 1] : null;
-  const verRows = e.versions.slice().reverse().map((v, i) => `<div class="vrow">
-    <div class="vn ${i === 0 ? 'cur' : ''} serif">v${v.number}</div>
-    <div><div class="co">${esc(v.comment || '—')}</div><div class="sub">${esc((v.createdAt || '').slice(0, 10))} · ${esc(v.author)} · ${money(v.totalAmount, v.currency)}</div></div>
+  const launched = !!(e.launch && e.launch.specId) || e.status === 'launched';
+  const activeNum = e.summary ? e.summary.activeVersion : null;
+  const activeV = activeNum ? (e.versions || []).find(v => v.number === activeNum) : null;
+  const activeSnap = (activeV && activeV.snapshot) ? activeV.snapshot : e.draft;
+  const PB = portalBase();
+  const companyCell = (e.company && e.companyId)
+    ? `<a class="clink" href="${PB}/crm/company/details/${esc(e.companyId)}/" target="_blank" rel="noopener">${esc(e.company)} ↗</a>`
+    : esc(e.company || '—');
+  const dealText = (e.dealTitle ? esc(e.dealTitle) : '') + (e.dealId ? ' · #' + e.dealId : (e.dealTitle ? '' : '—'));
+  const dealCell = e.dealId
+    ? `<a class="clink" href="${PB}/crm/deal/details/${esc(e.dealId)}/" target="_blank" rel="noopener">${dealText} ↗</a>`
+    : dealText;
+  const verRows = e.versions.slice().reverse().map((v) => {
+    const isActive = activeNum ? v.number === activeNum : false;
+    return `<div class="vrow">
+    <div class="vn ${isActive ? 'cur' : ''} serif">v${v.number}${isActive ? ' <span class="tag t-ok" style="vertical-align:middle;font-size:8px;padding:2px 6px">действующая</span>' : ''}</div>
+    <div><div class="co">${esc(v.comment || '—')}</div><div class="sub">${esc((v.createdAt || '').slice(0, 10))} · ${esc(v.author)} · ${money(v.totalAmount, v.currency)}${v.basedOn ? ' · на базе v' + v.basedOn : ''}</div></div>
     <div class="vacts">
+      <button class="btn sm ghost" data-editv="${v.number}" title="Редактировать эту версию в конструкторе">✎ Правка</button>
+      ${isActive ? '' : `<button class="btn sm ghost" data-actv="${v.number}" title="Сделать действующей версией">Сделать актуальной</button>`}
       <button class="btn sm ghost" data-act="excel" data-v="${v.number}">Excel</button>
       <button class="btn sm ghost" data-act="kp" data-v="${v.number}">КП</button>
       <button class="btn sm ghost" data-act="contract" data-v="${v.number}">Договор</button>
-    </div></div>`).join('') || '<p class="sub" style="padding:8px 0">Версий пока нет. Сохраните версию в конструкторе.</p>';
+    </div></div>`;
+  }).join('') || '<p class="sub" style="padding:8px 0">Версий пока нет. Сохраните версию в конструкторе.</p>';
 
-  $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Карточка · ${esc(e.id)}</span>
-    <h1>${esc(e.title)}</h1></div>${statusTag(e.status)}</div>
+  $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Карточка сметы</span>
+    <h1>${esc(e.title)}</h1></div>${launchTag(launched)}</div>
     <div class="grid2">
       <div class="info"><div class="kv">
-        <div class="cell"><div class="k">Сделка</div><div class="val">${e.dealTitle ? esc(e.dealTitle) : ''}${e.dealId ? ' · #' + e.dealId : (e.dealTitle ? '' : '—')}</div></div>
-        <div class="cell"><div class="k">Компания</div><div class="val">${esc(e.company || '—')}</div></div>
+        <div class="cell"><div class="k">Сделка</div><div class="val">${dealCell}</div></div>
+        <div class="cell"><div class="k">Компания</div><div class="val">${companyCell}</div></div>
         <div class="cell"><div class="k">Контакт</div><div class="val">${esc(e.contact || '—')}</div></div>
         <div class="cell"><div class="k">Ответственный</div><div class="val">${esc(e.responsible)}</div></div>
         <div class="cell"><div class="k">Страна · валюта</div><div class="val">${esc((App.boot.countries.find(c => c.id === e.countryId) || {}).name || '')} · ${esc(e.currency)}</div></div>
@@ -267,24 +386,31 @@ async function viewCard(id) {
         <div class="cell"><div class="k">Изменена</div><div class="val">${esc((e.updatedAt || '').slice(0, 10))} · ${esc(e.updatedBy)}</div></div>
       </div></div>
       <div class="aside">
-        <div><div class="eyebrow">Сумма (текущий черновик)</div><div class="bignum tnum">${fmt(r.total)} <small>${esc(e.currency)}</small></div></div>
+        <div><div class="eyebrow">Сумма${activeNum ? ' (действующая v' + activeNum + ')' : ' (черновик)'}</div><div class="bignum tnum">${fmt(r.total)} <small>${esc(e.currency)}</small></div></div>
         <hr class="hair">
-        <div style="display:flex;justify-content:space-between"><span class="sub">Активных этапов</span><span class="tnum co">${e.draft.stages.filter(s => s.on).length} из ${e.draft.stages.length}</span></div>
+        <div style="display:flex;justify-content:space-between"><span class="sub">Активных этапов</span><span class="tnum co">${activeSnap.stages.filter(s => s.on).length} из ${activeSnap.stages.length}</span></div>
         <div style="display:flex;justify-content:space-between"><span class="sub">Часы клиенту · исполнителю</span><span class="tnum co">${r.hoursClient} · ${r.hoursExecutor}</span></div>
         <div style="display:flex;justify-content:space-between"><span class="sub">Срок реализации</span><span class="tnum co">${r.durationDays} дн.</span></div>
         <hr class="hair">
         <button class="btn prim" id="editBtn">Открыть конструктор</button>
-        <button class="btn ghost" id="apprBtn">Отправить на согласование</button>
         ${e.versions.length ? '<button class="btn" id="launchBtn" style="background:var(--ok);border-color:var(--ok);color:#fff">🚀 Запустить проект</button>' : ''}
         ${e.launch && e.launch.specUrl ? `<a class="link" href="${esc(e.launch.specUrl)}" target="_blank" style="text-align:center">Спецификация #${esc(e.launch.specId)} · задач: ${e.launch.tasksCreated}</a>` : ''}
       </div>
     </div>
-    <div class="phead" style="margin-top:34px"><div><span class="eyebrow">Версии</span></div></div>
+    <div class="phead" style="margin-top:34px"><div><span class="eyebrow">Версии</span>
+      <p class="dek" style="margin-top:4px">Нажмите «Правка», чтобы открыть любую версию в конструкторе — изменения сохранятся как новая версия. «Сделать актуальной» — выбрать действующую версию.</p></div></div>
     <div class="panel" style="padding:8px 24px">${verRows}</div>`;
 
   $('#editBtn').onclick = () => location.hash = '#/edit/' + e.id;
-  $('#apprBtn').onclick = async () => { await api('/estimates/' + e.id + '/status', { method: 'POST', body: JSON.stringify({ status: 'on_approval' }) }); toast('Отправлено на согласование'); viewCard(e.id); };
   const lb = $('#launchBtn'); if (lb) lb.onclick = () => openLaunchModal(e);
+  $('#app').querySelectorAll('[data-editv]').forEach(b => b.onclick = async () => {
+    await api('/estimates/' + e.id + '/edit-version', { method: 'POST', body: JSON.stringify({ number: Number(b.dataset.editv) }) });
+    toast('Версия v' + b.dataset.editv + ' открыта для правки'); location.hash = '#/edit/' + e.id;
+  });
+  $('#app').querySelectorAll('[data-actv]').forEach(b => b.onclick = async () => {
+    await api('/estimates/' + e.id + '/versions/' + b.dataset.actv + '/activate', { method: 'POST', body: JSON.stringify({}) });
+    toast('Версия v' + b.dataset.actv + ' — действующая'); viewCard(e.id);
+  });
   $('#app').querySelectorAll('[data-act]').forEach(b => b.onclick = () => docAction(b.dataset.act, e, Number(b.dataset.v)));
 }
 
@@ -325,6 +451,7 @@ async function openLaunchModal(e) {
       contacts: $('#lm_contacts').value,
       projectId: $('#lm_newfolder').checked ? null : ($('#lm_project').value || null),
       createNewFolder: $('#lm_newfolder').checked,
+      author: author(),
     };
     const res = await api('/estimates/' + e.id + '/launch', { method: 'POST', body: JSON.stringify(body) });
     if (res && res.error) { toast('Ошибка запуска: ' + (res.message || res.error)); $('#lm_ok').disabled = false; $('#lm_ok').textContent = '🚀 Запустить проект'; return; }
@@ -343,7 +470,7 @@ function scheduleSave() {
   clearTimeout(App.saveTimer);
   App.saveTimer = setTimeout(async () => {
     const e = App.estimate;
-    await api('/estimates/' + e.id + '/draft', { method: 'PUT', body: JSON.stringify({ stages: e.draft.stages, lines: e.draft.lines }) });
+    await api('/estimates/' + e.id + '/draft', { method: 'PUT', body: JSON.stringify({ stages: e.draft.stages, lines: e.draft.lines, author: author() }) });
     const s = $('#saveState'); if (s) { s.textContent = 'Сохранено ' + new Date().toLocaleTimeString('ru-RU').slice(0, 5); }
   }, 500);
 }
@@ -374,9 +501,10 @@ function renderEditor() {
     body += pmRowHtml(s.code, r);
   });
 
-  $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Конструктор · ${esc(e.id)}</span>
+  const editingNote = e.editingFrom ? ` · <span class="tag t-warn" style="font-size:8px;padding:2px 6px">правка версии v${e.editingFrom} → сохранится как новая версия</span>` : '';
+  $('#app').innerHTML = `<div class="phead"><div><span class="eyebrow">Конструктор</span>
       <h1>${esc(e.title)}</h1>
-      <p class="dek">Ставка ${fmt(rate)} ${esc(e.currency)}/ч · <span id="saveState" class="sub">черновик</span></p></div>
+      <p class="dek">Ставка ${fmt(rate)} ${esc(e.currency)}/ч · <span id="saveState" class="sub">черновик</span>${editingNote}</p></div>
       <div style="display:flex;gap:8px"><button class="btn ghost" id="backBtn">К карточке</button>
       <button class="btn ghost" id="fromCat">Из каталога</button>
       <button class="btn prim" id="saveVer">Сохранить версию</button></div></div>
@@ -475,12 +603,10 @@ function delLine(id) {
   scheduleSave(); renderEditor();
 }
 async function saveVersion() {
-  const comment = prompt('Комментарий к версии:', '');
-  if (comment === null) return;
   const e = App.estimate;
-  await api('/estimates/' + e.id + '/draft', { method: 'PUT', body: JSON.stringify({ stages: e.draft.stages, lines: e.draft.lines }) });
-  await api('/estimates/' + e.id + '/versions', { method: 'POST', body: JSON.stringify({ comment }) });
-  toast('Версия сохранена'); location.hash = '#/e/' + e.id;
+  await api('/estimates/' + e.id + '/draft', { method: 'PUT', body: JSON.stringify({ stages: e.draft.stages, lines: e.draft.lines, author: author() }) });
+  const v = await api('/estimates/' + e.id + '/versions', { method: 'POST', body: JSON.stringify({ author: author() }) });
+  toast('Сохранено как версия v' + (v && v.number)); location.hash = '#/e/' + e.id;
 }
 // Порядок и заголовки вкладок каталога — по этапам проекта
 function catalogStages() {
@@ -734,7 +860,9 @@ function openContract(e) {
 /* ---------- Bootstrap ---------- */
 (async function init() {
   App.boot = await api('/bootstrap');
-  $('#who').innerHTML = `<b>${esc(App.boot.me.name)}</b><br>${esc(App.boot.me.portal)}`;
+  const u = await resolveB24User();
+  App.me = u || { id: null, name: App.boot.me.name };
+  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}`;
   window.addEventListener('hashchange', router);
   router();
 })();

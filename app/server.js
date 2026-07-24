@@ -156,16 +156,29 @@ function serveStatic(res, urlPath) {
   });
 }
 
+// Активная (действующая) версия сметы: e.activeVersion, иначе последняя.
+function activeVersionOf(e) {
+  if (!e.versions || !e.versions.length) return null;
+  const latest = e.versions.reduce((m, v) => Math.max(m, v.number), 0);
+  const num = e.activeVersion || latest;
+  return e.versions.find((v) => v.number === num) || e.versions[e.versions.length - 1];
+}
+
 // ---------- Обогащение сметы вычислениями ----------
 function estimateSummary(e) {
   const rate = e.rate;
-  const r = recalc(e.draft, rate);
-  const cur = e.versions.length ? e.versions[e.versions.length - 1] : null;
+  const active = activeVersionOf(e);
+  const snap = (active && active.snapshot) ? active.snapshot : e.draft;
+  const r = recalc(snap, rate);
+  const launched = !!(e.launch && e.launch.specId) || e.status === 'launched';
   return {
-    id: e.id, title: e.title, dealId: e.dealId, company: e.company, contact: e.contact,
+    id: e.id, title: e.title, dealId: e.dealId, dealTitle: e.dealTitle,
+    companyId: e.companyId, company: e.company, contact: e.contact,
     responsible: e.responsible, countryId: e.countryId, currency: e.currency, rate: e.rate,
-    status: e.status, isArchived: e.isArchived,
-    currentVersion: cur ? cur.number : 0,
+    status: e.status, launched, isArchived: e.isArchived,
+    currentVersion: active ? active.number : 0,
+    activeVersion: active ? active.number : null,
+    versionCount: (e.versions || []).length,
     totalAmount: r.total, durationDays: r.durationDays,
     hoursClient: r.hoursClient, hoursExecutor: r.hoursExecutor,
     createdAt: e.createdAt, updatedAt: e.updatedAt,
@@ -180,7 +193,7 @@ async function api(req, res, parts, query) {
   // GET /api/bootstrap
   if (method === 'GET' && parts[1] === 'bootstrap') {
     return sendJSON(res, 200, {
-      me: { name: 'А. Шидловский', role: 'company_head', portal: 'avrika.bitrix24.ru' },
+      me: { name: 'Пользователь Битрикс24', role: 'user', portal: 'avrika.bitrix24.ru' },
       countries: store.countries, stages: store.stages, catalog: store.catalog,
       crmLive: CRM_LIVE,
     });
@@ -285,14 +298,16 @@ async function api(req, res, parts, query) {
       const b = await readBody(req);
       const c = country(b.countryId) || store.countries[0];
       const now = new Date().toISOString();
+      const who = (b.author && b.author.name) ? String(b.author.name) : (b.responsible || 'Пользователь Битрикс24');
+      const whoId = (b.author && b.author.id) ? b.author.id : null;
       const e = {
         id: nid('est'), title: b.title || 'Новая смета',
         dealId: b.dealId || null, dealTitle: b.dealTitle || '',
         companyId: b.companyId || null, company: b.company || '', contact: b.contact || '',
-        responsible: b.responsible || 'А. Шидловский',
+        responsible: who, responsibleId: whoId,
         countryId: c.id, currency: c.currency, rate: c.rate,
         status: 'draft', isArchived: false,
-        createdAt: now, updatedAt: now, createdBy: 'А. Шидловский', updatedBy: 'А. Шидловский',
+        createdAt: now, updatedAt: now, createdBy: who, createdById: whoId, updatedBy: who,
         draft: { stages: defaultStages(), lines: [] }, versions: [],
       };
       store.estimates.unshift(e); persist();
@@ -303,9 +318,11 @@ async function api(req, res, parts, query) {
     if (!e) return sendJSON(res, 404, { error: 'not found' });
     const sub = parts[3];
 
-    // GET /api/estimates/:id  (full)
+    // GET /api/estimates/:id  (full). computed — по действующей версии (или черновику, если версий нет)
     if (method === 'GET' && !sub) {
-      const r = recalc(e.draft, e.rate);
+      const active = activeVersionOf(e);
+      const snap = (active && active.snapshot) ? active.snapshot : e.draft;
+      const r = recalc(snap, e.rate);
       return sendJSON(res, 200, { ...e, computed: r, summary: estimateSummary(e) });
     }
     // DELETE /api/estimates/:id  (полное удаление из реестра)
@@ -320,8 +337,30 @@ async function api(req, res, parts, query) {
       if (b.stages) e.draft.stages = b.stages;
       if (b.lines) e.draft.lines = b.lines;
       e.updatedAt = new Date().toISOString();
+      if (b.author && b.author.name) e.updatedBy = String(b.author.name);
       persist();
       return sendJSON(res, 200, { ok: true, computed: recalc(e.draft, e.rate) });
+    }
+    // POST /api/estimates/:id/edit-version { number } — загрузить снимок версии в черновик
+    if (method === 'POST' && sub === 'edit-version') {
+      const b = await readBody(req);
+      const v = (e.versions || []).find((x) => x.number === Number(b.number));
+      if (!v) return sendJSON(res, 404, { error: 'version not found' });
+      e.draft = JSON.parse(JSON.stringify(v.snapshot));
+      e.editingFrom = v.number;
+      e.updatedAt = new Date().toISOString();
+      persist();
+      return sendJSON(res, 200, { ok: true, editingFrom: v.number, computed: recalc(e.draft, e.rate) });
+    }
+    // POST /api/estimates/:id/versions/:num/activate — сделать версию действующей
+    if (method === 'POST' && sub === 'versions' && parts[4] && parts[5] === 'activate') {
+      const num = Number(parts[4]);
+      const v = (e.versions || []).find((x) => x.number === num);
+      if (!v) return sendJSON(res, 404, { error: 'version not found' });
+      e.activeVersion = num;
+      e.updatedAt = new Date().toISOString();
+      persist();
+      return sendJSON(res, 200, { ok: true, activeVersion: num });
     }
     // POST /api/estimates/:id/recalc
     if (method === 'POST' && sub === 'recalc') {
@@ -329,19 +368,24 @@ async function api(req, res, parts, query) {
       const draft = b.draft || e.draft;
       return sendJSON(res, 200, recalc(draft, e.rate));
     }
-    // POST /api/estimates/:id/versions
-    if (method === 'POST' && sub === 'versions') {
+    // POST /api/estimates/:id/versions  (создать новую версию из текущего черновика)
+    if (method === 'POST' && sub === 'versions' && !parts[4]) {
       const b = await readBody(req);
       const r = recalc(e.draft, e.rate);
       const number = (e.versions.reduce((m, v) => Math.max(m, v.number), 0)) + 1;
+      const who = (b.author && b.author.name) ? String(b.author.name) : (e.updatedBy || e.responsible || 'Пользователь Битрикс24');
       const v = {
-        number, author: 'А. Шидловский', comment: b.comment || '',
+        number, author: who, comment: b.comment || '',
+        basedOn: e.editingFrom || null,
         currency: e.currency, rate: e.rate, totalAmount: r.total, durationDays: r.durationDays,
         createdAt: new Date().toISOString(),
         snapshot: JSON.parse(JSON.stringify(e.draft)),
       };
       e.versions.push(v);
+      e.activeVersion = number; // новая версия становится действующей
+      e.editingFrom = null;
       e.updatedAt = v.createdAt;
+      if (b.author && b.author.name) e.updatedBy = who;
       persist();
       return sendJSON(res, 201, v);
     }
@@ -428,7 +472,8 @@ async function launchProject(e, form) {
   const { services, computed } = estimateServices(e);
   const today = new Date();
   const planDate = addWorkingDays(today, computed.durationDays || 1);
-  const launcher = USERS.andrey; // текущий пользователь приложения
+  // запускающий = авторизованный в Б24 пользователь (иначе — владелец ключа)
+  const launcher = (form.author && form.author.id) ? Number(form.author.id) : USERS.andrey;
 
   // 1) Элемент смарт-процесса «Спецификации» (1040)
   const observers = [USERS.andrey];
@@ -452,7 +497,8 @@ async function launchProject(e, form) {
   if (COUNTRY_ENUM[e.countryId]) fields[SPEC.countryField] = COUNTRY_ENUM[e.countryId];
   if (e.companyId) fields.companyId = e.companyId;
   const specItem = await vibeData('POST', '/items/1040', fields);
-  const specId = (specItem && (specItem.item ? specItem.item.id : specItem.id)) || null;
+  const si = (specItem && specItem.item) ? specItem.item : specItem;
+  const specId = (si && (si.id != null ? si.id : si.ID)) || null;
   // привязка задач к элементу смарт-процесса «Спецификации» (UF_CRM_TASK: T<entityTypeId>_<id>)
   const crmBind = specId ? ['T' + SPEC.entityTypeId + '_' + specId] : undefined;
 
@@ -461,11 +507,13 @@ async function launchProject(e, form) {
   let groupCreated = false;
   if (form.createNewFolder) {
     const grp = await vibeData('POST', '/workgroups', {
-      name: e.title, ownerId: USERS.polina, isProject: true, opened: true,
+      name: e.title, ownerId: USERS.polina, isProject: true, opened: true, visible: true,
       members: [USERS.polina, USERS.nastasya, launcher],
     });
     groupId = (grp && (grp.id || (grp.workgroup && grp.workgroup.id))) || null;
     groupCreated = true;
+    // create игнорирует opened → делаем группу открытой отдельным PATCH
+    if (groupId) { try { await vibeData('PATCH', '/workgroups/' + groupId, { opened: true, visible: true }); } catch (x) { /* не критично */ } }
   }
 
   // 3) Задача «…: взять в работу»
