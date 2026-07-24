@@ -74,17 +74,24 @@ function extractUser(o) {
   if (id == null && !name) return null;
   return { id: id != null ? (Number(id) || id) : null, name: name || ('#' + id) };
 }
+let lastOauthDebug = null; // санитизированная диагностика (без токенов/сессий)
 // Разрешить текущего пользователя по сессии Vibecode (несколько источников — платформа/шейпы разнятся)
-async function resolveSessionUser(session) {
+async function resolveSessionUser(session, dbg) {
   const H = { 'X-Api-Key': VIBE_APP_KEY, Authorization: 'Bearer ' + session };
-  const tries = ['/me', '/users/current', '/user/current', '/profile'];
+  const tries = ['/me', '/users/current', '/user/current', '/profile', '/users?limit=1'];
   for (const p of tries) {
     try {
       const r = await httpsJson('GET', VIBE_BASE + p, H);
       const d = (r.json && (r.json.data !== undefined ? r.json.data : r.json)) || {};
-      const u = extractUser(d.user || d.currentUser || d.profile || d);
+      const u = extractUser(d.user || d.currentUser || d.profile || (Array.isArray(d) ? d[0] : d));
+      if (dbg) dbg.push({
+        path: p, status: r.status,
+        topKeys: (r.json && typeof r.json === 'object' && !Array.isArray(r.json)) ? Object.keys(r.json).slice(0, 12) : (Array.isArray(r.json) ? ['<array>'] : []),
+        dataKeys: (d && typeof d === 'object' && !Array.isArray(d)) ? Object.keys(d).slice(0, 25) : (Array.isArray(d) ? ['<array:' + d.length + '>'] : []),
+        extracted: u,
+      });
       if (u && (u.id != null || u.name)) return u;
-    } catch (e) { /* следующий источник */ }
+    } catch (e) { if (dbg) dbg.push({ path: p, error: String(e && e.message) }); }
   }
   return null;
 }
@@ -104,13 +111,21 @@ async function oauthRoute(req, res, pathname, query) {
       res.writeHead(302, { Location: '/?auth=err&reason=state' }); return res.end();
     }
     oauthStates.delete(state);
+    const dbg = { at: new Date().toISOString(), tokenStatus: null, tokenTopKeys: [], tokenDataKeys: [], hasSession: false, userInline: null, attempts: [], resolved: null };
     try {
       const tok = await httpsJson('POST', `${VIBE_BASE}/oauth/token`, { 'X-Api-Key': VIBE_APP_KEY }, { app_key: VIBE_APP_KEY, code, redirect_uri: redirectUri });
       const td = (tok.json && (tok.json.data !== undefined ? tok.json.data : tok.json)) || {};
+      dbg.tokenStatus = tok.status;
+      dbg.tokenTopKeys = (tok.json && typeof tok.json === 'object') ? Object.keys(tok.json).slice(0, 12) : [];
+      dbg.tokenDataKeys = (td && typeof td === 'object') ? Object.keys(td).slice(0, 25) : [];
       const session = td.session || td.token || td.access_token || td.sessionToken || td.accessToken;
-      if (!session) { res.writeHead(302, { Location: '/?auth=err&reason=token' }); return res.end(); }
+      dbg.hasSession = !!session;
+      if (!session) { lastOauthDebug = dbg; res.writeHead(302, { Location: '/?auth=err&reason=token' }); return res.end(); }
       let user = extractUser(td.user || td.currentUser);
-      if (!user) user = await resolveSessionUser(session);
+      dbg.userInline = user;
+      if (!user) user = await resolveSessionUser(session, dbg.attempts);
+      dbg.resolved = user;
+      lastOauthDebug = dbg;
       const sid = crypto.randomBytes(24).toString('hex');
       oauthSessions.set(sid, { session, user, exp: Date.now() + 8 * 3600 * 1000 });
       // Пробрасываем и в куке, и во фрагменте URL (на случай блокировки сторонних кук в iframe)
@@ -118,6 +133,7 @@ async function oauthRoute(req, res, pathname, query) {
       res.writeHead(302, { 'Set-Cookie': cookieHeader('eb_sid', sid, 8 * 3600), Location: '/?auth=ok' + frag });
       return res.end();
     } catch (e) {
+      dbg.error = String(e && e.message); lastOauthDebug = dbg;
       res.writeHead(302, { Location: '/?auth=err&reason=exchange' }); return res.end();
     }
   }
@@ -314,6 +330,8 @@ async function api(req, res, parts, query) {
     if (s && s.exp > Date.now()) return sendJSON(res, 200, { user: s.user || null, hasSession: true });
     return sendJSON(res, 200, { user: null, needsAuth: OAUTH_ENABLED, loginUrl: '/oauth/login' });
   }
+  // GET /api/oauth-debug — санитизированная диагностика последнего OAuth-колбэка (без токенов)
+  if (method === 'GET' && parts[1] === 'oauth-debug') return sendJSON(res, 200, lastOauthDebug || { none: true });
 
   // GET /api/launch-meta — данные для формы «Запустить проект»
   if (method === 'GET' && parts[1] === 'launch-meta') {

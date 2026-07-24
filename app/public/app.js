@@ -1094,7 +1094,9 @@ function authStatusFromUrl() {
   App.boot = await api('/bootstrap');
   const authStatus = authStatusFromUrl();
   App.me = await resolveIdentity();
-  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}`;
+  const detLink = App.me.id ? '' : ' · <span class="wchg" id="whoDet">определить</span>';
+  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}${detLink}`;
+  const wd = $('#whoDet'); if (wd) wd.onclick = () => { try { sessionStorage.removeItem('eb_authtry'); localStorage.removeItem('eb_sid'); } catch (e) {} location.href = '/oauth/login'; };
   window.addEventListener('hashchange', router);
   router();
   if (authStatus && authStatus.status === 'err') { toast('Определение пользователя не удалось (' + (authStatus.reason || 'ошибка') + ')'); try { history.replaceState(null, '', location.pathname); } catch (e) {} }
