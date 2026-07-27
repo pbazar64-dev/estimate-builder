@@ -74,6 +74,25 @@ function extractUser(o) {
   if (id == null && !name) return null;
   return { id: id != null ? (Number(id) || id) : null, name: name || ('#' + id) };
 }
+// Текущий пользователь портала — приходит в заголовках запроса от шлюза Vibecode
+// (при открытии приложения внутри Битрикс24). Самый надёжный источник авторства.
+function gatewayUser(req) {
+  const h = req.headers || {};
+  const id = h['x-vibe-user-id'];
+  if (!id) return null;
+  let name = '';
+  const enc = h['x-vibe-user-name-encoded'];
+  if (enc) { try { name = decodeURIComponent(enc); } catch (e) { name = ''; } }
+  if (!name && h['x-vibe-user-name']) { try { name = Buffer.from(String(h['x-vibe-user-name']), 'latin1').toString('utf8'); } catch (e) { name = String(h['x-vibe-user-name']); } }
+  return { id: Number(id) || id, name: name || ('Пользователь #' + id), role: h['x-vibe-user-role'] || null };
+}
+// Автор операции: приоритет — пользователь из шлюза, затем присланный клиентом, затем дефолт.
+function reqAuthor(req, b) {
+  const gw = gatewayUser(req);
+  if (gw && gw.name) return { id: gw.id, name: gw.name };
+  if (b && b.author && b.author.name) return { id: b.author.id || null, name: String(b.author.name) };
+  return null;
+}
 let lastOauthDebug = null; // санитизированная диагностика (без токенов/сессий)
 let lastReqHeaders = null;  // заголовки последнего /api/bootstrap (шлюз может прокидывать пользователя)
 const SECRET_HEADERS = new Set(['authorization', 'cookie', 'x-api-key', 'x-eb-sid']);
@@ -340,12 +359,15 @@ async function api(req, res, parts, query) {
   // GET /api/health
   if (parts[1] === 'health') return sendJSON(res, 200, { ok: true, ts: Date.now() });
 
-  // GET /api/whoami — текущий пользователь по OAuth-сессии (куки eb_sid или заголовок X-EB-SID)
+  // GET /api/whoami — текущий пользователь. Источник №1 — заголовки шлюза Vibecode
+  // (при открытии внутри портала). Резерв — OAuth-сессия.
   if (method === 'GET' && parts[1] === 'whoami') {
+    const gw = gatewayUser(req);
+    if (gw) return sendJSON(res, 200, { user: gw, source: 'gateway' });
     const cookies = parseCookies(req);
     const sid = cookies.eb_sid || req.headers['x-eb-sid'] || query.sid || '';
     const s = sid && oauthSessions.get(sid);
-    if (s && s.exp > Date.now()) { s.exp = Date.now() + 30 * 24 * 3600 * 1000; return sendJSON(res, 200, { user: s.user || null, hasSession: true }); }
+    if (s && s.exp > Date.now()) { s.exp = Date.now() + 30 * 24 * 3600 * 1000; return sendJSON(res, 200, { user: s.user || null, hasSession: true, source: 'session' }); }
     return sendJSON(res, 200, { user: null, needsAuth: OAUTH_ENABLED, loginUrl: '/oauth/login' });
   }
   // GET /api/oauth-debug — санитизированная диагностика последнего OAuth-колбэка (без токенов)
@@ -449,8 +471,9 @@ async function api(req, res, parts, query) {
       const b = await readBody(req);
       const c = country(b.countryId) || store.countries[0];
       const now = new Date().toISOString();
-      const who = (b.author && b.author.name) ? String(b.author.name) : (b.responsible || 'Пользователь Битрикс24');
-      const whoId = (b.author && b.author.id) ? b.author.id : null;
+      const auth = reqAuthor(req, b);
+      const who = auth ? auth.name : (b.responsible || 'Пользователь Битрикс24');
+      const whoId = auth ? auth.id : null;
       const e = {
         id: nid('est'), title: b.title || 'Новая смета',
         dealId: b.dealId || null, dealTitle: b.dealTitle || '',
@@ -488,7 +511,7 @@ async function api(req, res, parts, query) {
       if (b.stages) e.draft.stages = b.stages;
       if (b.lines) e.draft.lines = b.lines;
       e.updatedAt = new Date().toISOString();
-      if (b.author && b.author.name) e.updatedBy = String(b.author.name);
+      { const a = reqAuthor(req, b); if (a) e.updatedBy = a.name; }
       persist();
       return sendJSON(res, 200, { ok: true, computed: recalc(e.draft, e.rate) });
     }
@@ -524,7 +547,8 @@ async function api(req, res, parts, query) {
       const b = await readBody(req);
       const r = recalc(e.draft, e.rate);
       const number = (e.versions.reduce((m, v) => Math.max(m, v.number), 0)) + 1;
-      const who = (b.author && b.author.name) ? String(b.author.name) : (e.updatedBy || e.responsible || 'Пользователь Битрикс24');
+      const a = reqAuthor(req, b);
+      const who = a ? a.name : (e.updatedBy || e.responsible || 'Пользователь Битрикс24');
       const v = {
         number, author: who, comment: b.comment || '',
         basedOn: e.editingFrom || null,
@@ -536,7 +560,7 @@ async function api(req, res, parts, query) {
       e.activeVersion = number; // новая версия становится действующей
       e.editingFrom = null;
       e.updatedAt = v.createdAt;
-      if (b.author && b.author.name) e.updatedBy = who;
+      if (a) e.updatedBy = who;
       persist();
       return sendJSON(res, 201, v);
     }
@@ -584,6 +608,7 @@ async function api(req, res, parts, query) {
     if (method === 'POST' && sub === 'launch') {
       if (!CRM_LIVE) return sendJSON(res, 400, { error: 'CRM недоступна: нужен personal-ключ vibe_api_*' });
       const b = await readBody(req);
+      { const a = reqAuthor(req, b); if (a) b.author = a; } // запускающий = пользователь из шлюза
       try {
         const result = await launchProject(e, b);
         e.status = 'launched';
