@@ -266,8 +266,13 @@ async function viewRegistry() {
     const p = $('#filtPanel'); if (p && !p.contains(ev.target) && ev.target.id !== 'gearBtn') { regState.panel = false; p.classList.add('hide'); }
   }
 
-  let all = [];
-  function responsibles() { return [...new Set(all.map(e => e.responsible).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')); }
+  let all = [], portalUsers = [];
+  // Список для фильтра «Ответственный» = реальные сотрудники Битрикс24 + ответственные из смет
+  function responsibles() {
+    const set = new Set(portalUsers);
+    all.forEach(e => { if (e.responsible) set.add(e.responsible); });
+    return [...set].sort((a, b) => a.localeCompare(b, 'ru'));
+  }
   function activeFilterCount() {
     const f = regState.f; let n = 0;
     if (f.responsible) n++; if (f.status) n++; if (f.dateFrom || f.dateTo) n++;
@@ -303,7 +308,12 @@ async function viewRegistry() {
     $('#fp_done').onclick = () => { regState.panel = false; p.classList.add('hide'); };
   }
 
-  async function load() { all = await api('/estimates'); render(); }
+  async function load() {
+    all = await api('/estimates');
+    if (!portalUsers.length) { try { const r = await api('/crm/users'); portalUsers = (r.items || []).map(u => u.name).filter(Boolean); } catch (e) {} }
+    render();
+    if (regState.panel) renderPanel();
+  }
   function visibleCols() { return REG_COLS.filter(c => !regState.hidden.has(c.key)); }
   function applyFilters(items) {
     const gq = $('#q').value.trim().toLowerCase(), f = regState.f;
