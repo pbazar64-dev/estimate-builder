@@ -848,8 +848,16 @@ function clientRows(e) {
 }
 function docAction(act, e, vnum) {
   if (act === 'excel') return exportXLSX(e);
-  if (act === 'kp') return openKP(e);
+  if (act === 'kp') return downloadKP(e, vnum);
   if (act === 'contract') return openContract(e);
+}
+// КП — .docx по шаблону страны (сервер сам выбирает шаблон РФ/РБ/РК и вставляет таблицы)
+function downloadKP(e, vnum) {
+  const url = '/api/estimates/' + e.id + '/kp' + (vnum ? ('?v=' + vnum) : '');
+  const a = document.createElement('a');
+  a.href = url; a.download = ''; document.body.appendChild(a); a.click();
+  setTimeout(() => a.remove(), 100);
+  toast('Генерация КП (.docx)…');
 }
 
 /* ---- Генерация настоящего XLSX без зависимостей (номера — текст, тонкие границы) ---- */

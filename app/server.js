@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS } = require('./seed');
 const { recalc } = require('./calc');
+const { buildKP, TEMPLATE_BY_COUNTRY } = require('./kp');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
@@ -379,6 +380,24 @@ async function api(req, res, parts, query) {
       store.estimates = store.estimates.filter((x) => x.id !== e.id);
       persist();
       return sendJSON(res, 200, { ok: true });
+    }
+    // GET /api/estimates/:id/kp[?v=N] — генерация КП в .docx по шаблону страны
+    if (method === 'GET' && sub === 'kp') {
+      const active = activeVersionOf(e);
+      let snap = (active && active.snapshot) ? active.snapshot : e.draft;
+      if (query.v) { const v = (e.versions || []).find((x) => x.number === Number(query.v)); if (v && v.snapshot) snap = v.snapshot; }
+      try {
+        const buf = buildKP(e, snap, store.stages, path.join(__dirname, 'templates'));
+        const base = ((e.company ? e.company + ' — ' : '') + 'КП').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'КП';
+        res.writeHead(200, {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'Content-Disposition': "attachment; filename=\"KP.docx\"; filename*=UTF-8''" + encodeURIComponent(base) + '.docx',
+          'Content-Length': buf.length, 'Cache-Control': 'no-store',
+        });
+        return res.end(buf);
+      } catch (err) {
+        return sendJSON(res, 500, { error: 'kp_failed', message: String(err && err.message) });
+      }
     }
     // PUT /api/estimates/:id/draft
     if (method === 'PUT' && sub === 'draft') {
