@@ -4,7 +4,6 @@
 
 const http = require('http');
 const https = require('https');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS } = require('./seed');
@@ -21,59 +20,6 @@ const VIBE_BASE = process.env.VIBE_API_BASE || 'https://vibecode.bitrix24.tech/v
 const VIBE_KEY = process.env.VIBE_API_KEY || '';
 const CRM_LIVE = /^vibe_api_/.test(VIBE_KEY);
 
-// ---------- Идентификация пользователя через OAuth-сессию (vibe_app_*) ----------
-// Используется ТОЛЬКО чтобы узнать, кто сейчас в приложении (автор/ответственный).
-// CRM-операции остаются на персональном ключе VIBE_API_KEY.
-const VIBE_APP_KEY = process.env.VIBE_APP_KEY || '';
-const OAUTH_ENABLED = /^vibe_app_/.test(VIBE_APP_KEY);
-const oauthSessions = new Map(); // sid -> { session, user, exp }
-const oauthStates = new Map();   // state -> exp
-const _oauthCleanup = setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of oauthSessions) if (v.exp < now) oauthSessions.delete(k);
-  for (const [k, v] of oauthStates) if (v < now) oauthStates.delete(k);
-}, 300000);
-if (_oauthCleanup.unref) _oauthCleanup.unref();
-
-function httpsJson(method, fullUrl, headers, body) {
-  return new Promise((resolve, reject) => {
-    const u = new URL(fullUrl);
-    const payload = body ? JSON.stringify(body) : null;
-    const req = https.request({
-      method, hostname: u.hostname, path: u.pathname + u.search,
-      headers: Object.assign({ Accept: 'application/json' }, headers || {},
-        payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
-      timeout: 15000,
-    }, (r) => { let d = ''; r.on('data', (c) => d += c); r.on('end', () => { let j = null; try { j = JSON.parse(d); } catch {} resolve({ status: r.statusCode, json: j, raw: d }); }); });
-    req.on('error', reject);
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    if (payload) req.write(payload);
-    req.end();
-  });
-}
-function parseCookies(req) {
-  const h = req.headers.cookie || ''; const o = {};
-  h.split(';').forEach((p) => { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); });
-  return o;
-}
-function cookieHeader(name, val, maxAge) {
-  return `${name}=${encodeURIComponent(val)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=None`;
-}
-const APP_PUBLIC_URL = (process.env.APP_PUBLIC_URL || '').replace(/\/+$/, '');
-function publicOrigin(req) {
-  if (APP_PUBLIC_URL) return APP_PUBLIC_URL; // зафиксированный публичный URL = зарегистрированный redirect_uri
-  const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
-  const host = req.headers['x-forwarded-host'] || req.headers.host;
-  return `${proto}://${host}`;
-}
-function extractUser(o) {
-  if (!o || typeof o !== 'object') return null;
-  const id = o.id != null ? o.id : (o.ID != null ? o.ID : (o.userId != null ? o.userId : (o.USER_ID != null ? o.USER_ID : null)));
-  const name = [o.name || o.NAME || o.firstName || o.first_name, o.lastName || o.LAST_NAME || o.last_name].filter(Boolean).join(' ').trim()
-    || o.fullName || o.FULL_NAME || o.title || o.email || o.EMAIL || null;
-  if (id == null && !name) return null;
-  return { id: id != null ? (Number(id) || id) : null, name: name || ('#' + id) };
-}
 // Текущий пользователь портала — приходит в заголовках запроса от шлюза Vibecode
 // (при открытии приложения внутри Битрикс24). Самый надёжный источник авторства.
 function gatewayUser(req) {
@@ -92,88 +38,6 @@ function reqAuthor(req, b) {
   if (gw && gw.name) return { id: gw.id, name: gw.name };
   if (b && b.author && b.author.name) return { id: b.author.id || null, name: String(b.author.name) };
   return null;
-}
-let lastOauthDebug = null; // санитизированная диагностика (без токенов/сессий)
-let lastReqHeaders = null;  // заголовки последнего /api/bootstrap (шлюз может прокидывать пользователя)
-const SECRET_HEADERS = new Set(['authorization', 'cookie', 'x-api-key', 'x-eb-sid']);
-function sanitizeHeaders(h) {
-  const out = {};
-  for (const k of Object.keys(h || {})) {
-    const lk = k.toLowerCase();
-    if (SECRET_HEADERS.has(lk)) { out[k] = '<masked>'; continue; }
-    out[k] = h[k];
-  }
-  return out;
-}
-// Разрешить текущего пользователя по сессии Vibecode (несколько источников — платформа/шейпы разнятся)
-async function resolveSessionUser(session, dbg) {
-  const H = { 'X-Api-Key': VIBE_APP_KEY, Authorization: 'Bearer ' + session };
-  const tries = ['/me', '/users/current', '/user/current', '/profile', '/users?limit=1'];
-  for (const p of tries) {
-    try {
-      const r = await httpsJson('GET', VIBE_BASE + p, H);
-      const d = (r.json && (r.json.data !== undefined ? r.json.data : r.json)) || {};
-      const u = extractUser(d.user || d.currentUser || d.profile || (Array.isArray(d) ? d[0] : d));
-      if (dbg) dbg.push({
-        path: p, status: r.status,
-        topKeys: (r.json && typeof r.json === 'object' && !Array.isArray(r.json)) ? Object.keys(r.json).slice(0, 12) : (Array.isArray(r.json) ? ['<array>'] : []),
-        dataKeys: (d && typeof d === 'object' && !Array.isArray(d)) ? Object.keys(d).slice(0, 25) : (Array.isArray(d) ? ['<array:' + d.length + '>'] : []),
-        extracted: u,
-      });
-      if (u && (u.id != null || u.name)) return u;
-    } catch (e) { if (dbg) dbg.push({ path: p, error: String(e && e.message) }); }
-  }
-  return null;
-}
-async function oauthRoute(req, res, pathname, query) {
-  const redirectUri = publicOrigin(req) + '/oauth/callback';
-  if (pathname === '/oauth/login') {
-    if (!OAUTH_ENABLED) { res.writeHead(302, { Location: '/?auth=disabled' }); return res.end(); }
-    const state = crypto.randomBytes(16).toString('hex');
-    oauthStates.set(state, Date.now() + 600000);
-    const auth = `${VIBE_BASE}/oauth/authorize?app_key=${encodeURIComponent(VIBE_APP_KEY)}&state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-    res.writeHead(302, { 'Set-Cookie': cookieHeader('eb_ostate', state, 600), Location: auth });
-    return res.end();
-  }
-  if (pathname === '/oauth/callback') {
-    const code = query.code, state = query.state, cookies = parseCookies(req);
-    if (!code || !state || !oauthStates.has(state) || (cookies.eb_ostate && cookies.eb_ostate !== state)) {
-      res.writeHead(302, { Location: '/?auth=err&reason=state' }); return res.end();
-    }
-    oauthStates.delete(state);
-    const dbg = { at: new Date().toISOString(), tokenStatus: null, tokenTopKeys: [], tokenDataKeys: [], hasSession: false, userInline: null, attempts: [], resolved: null };
-    try {
-      const tok = await httpsJson('POST', `${VIBE_BASE}/oauth/token`, { 'X-Api-Key': VIBE_APP_KEY }, { app_key: VIBE_APP_KEY, code, redirect_uri: redirectUri });
-      const td = (tok.json && (tok.json.data !== undefined ? tok.json.data : tok.json)) || {};
-      dbg.tokenStatus = tok.status;
-      dbg.tokenTopKeys = (tok.json && typeof tok.json === 'object') ? Object.keys(tok.json).slice(0, 12) : [];
-      dbg.tokenDataKeys = (td && typeof td === 'object') ? Object.keys(td).slice(0, 25) : [];
-      const session = td.session || td.token || td.access_token || td.sessionToken || td.accessToken;
-      dbg.hasSession = !!session;
-      if (!session) { lastOauthDebug = dbg; res.writeHead(302, { Location: '/?auth=err&reason=token' }); return res.end(); }
-      let user = extractUser(td.user || td.currentUser);
-      dbg.userInline = user;
-      if (!user) user = await resolveSessionUser(session, dbg.attempts);
-      dbg.resolved = user;
-      lastOauthDebug = dbg;
-      const sid = crypto.randomBytes(24).toString('hex');
-      oauthSessions.set(sid, { session, user, exp: Date.now() + 30 * 24 * 3600 * 1000 });
-      // Работает и как popup (postMessage в opener + закрытие), и как полная страница (redirect).
-      const payload = JSON.stringify({ uid: (user && user.id) || null, uname: (user && user.name) || null, sid });
-      const html = '<!doctype html><meta charset="utf-8"><body style="font:14px sans-serif;padding:24px">'
-        + '<script>(function(){var d=' + payload + ';'
-        + 'try{if(d.sid)localStorage.setItem("eb_sid",d.sid);}catch(e){}'
-        + 'if(window.opener){try{window.opener.postMessage({ebAuth:d},"*");}catch(e){}document.body.textContent="Готово. Можно закрыть окно.";setTimeout(function(){window.close();},100);}'
-        + 'else{location.replace("/?auth=ok#uid="+encodeURIComponent(d.uid||"")+"&uname="+encodeURIComponent(d.uname||"")+"&sid="+(d.sid||""));}})();</script>'
-        + 'Готово…</body>';
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Set-Cookie': cookieHeader('eb_sid', sid, 30 * 24 * 3600) });
-      return res.end(html);
-    } catch (e) {
-      dbg.error = String(e && e.message); lastOauthDebug = dbg;
-      res.writeHead(302, { Location: '/?auth=err&reason=exchange' }); return res.end();
-    }
-  }
-  res.writeHead(404); res.end('not found');
 }
 
 function vibeRequest(method, apiPath, body) {
@@ -348,7 +212,6 @@ async function api(req, res, parts, query) {
 
   // GET /api/bootstrap
   if (method === 'GET' && parts[1] === 'bootstrap') {
-    lastReqHeaders = { at: new Date().toISOString(), method, url: req.url, headers: sanitizeHeaders(req.headers) };
     return sendJSON(res, 200, {
       me: { name: 'Пользователь Битрикс24', role: 'user', portal: 'avrika.bitrix24.ru' },
       countries: store.countries, stages: store.stages, catalog: store.catalog,
@@ -359,21 +222,11 @@ async function api(req, res, parts, query) {
   // GET /api/health
   if (parts[1] === 'health') return sendJSON(res, 200, { ok: true, ts: Date.now() });
 
-  // GET /api/whoami — текущий пользователь. Источник №1 — заголовки шлюза Vibecode
-  // (при открытии внутри портала). Резерв — OAuth-сессия.
+  // GET /api/whoami — текущий пользователь из заголовков шлюза Vibecode (открытие внутри портала)
   if (method === 'GET' && parts[1] === 'whoami') {
     const gw = gatewayUser(req);
-    if (gw) return sendJSON(res, 200, { user: gw, source: 'gateway' });
-    const cookies = parseCookies(req);
-    const sid = cookies.eb_sid || req.headers['x-eb-sid'] || query.sid || '';
-    const s = sid && oauthSessions.get(sid);
-    if (s && s.exp > Date.now()) { s.exp = Date.now() + 30 * 24 * 3600 * 1000; return sendJSON(res, 200, { user: s.user || null, hasSession: true, source: 'session' }); }
-    return sendJSON(res, 200, { user: null, needsAuth: OAUTH_ENABLED, loginUrl: '/oauth/login' });
+    return sendJSON(res, 200, { user: gw || null, source: gw ? 'gateway' : null });
   }
-  // GET /api/oauth-debug — санитизированная диагностика последнего OAuth-колбэка (без токенов)
-  if (method === 'GET' && parts[1] === 'oauth-debug') return sendJSON(res, 200, lastOauthDebug || { none: true });
-  // GET /api/req-headers — заголовки последнего входящего /api/bootstrap (диагностика прокидывания пользователя шлюзом)
-  if (method === 'GET' && parts[1] === 'req-headers') return sendJSON(res, 200, lastReqHeaders || { none: true });
 
   // GET /api/launch-meta — данные для формы «Запустить проект»
   if (method === 'GET' && parts[1] === 'launch-meta') {
@@ -769,7 +622,6 @@ const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const query = Object.fromEntries(u.searchParams.entries());
-    if (u.pathname.startsWith('/oauth/')) return await oauthRoute(req, res, u.pathname, query);
     if (u.pathname.startsWith('/api/')) {
       const parts = u.pathname.split('/').filter(Boolean); // ['api', ...]
       return await api(req, res, parts, query);

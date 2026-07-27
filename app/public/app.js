@@ -4,33 +4,11 @@
 const App = { boot: null, estimate: null, saveTimer: null, me: null };
 const $ = (s, r = document) => r.querySelector(s);
 
-// Текущий пользователь Битрикс24 (через JS SDK портала). Нужен для авторства смет.
-function resolveB24User() {
-  return new Promise((resolve) => {
-    if (typeof BX24 === 'undefined' || !BX24) return resolve(null);
-    let done = false; const fin = (v) => { if (!done) { done = true; resolve(v); } };
-    setTimeout(() => fin(null), 4000);
-    try {
-      BX24.init(function () {
-        BX24.callMethod('user.current', {}, function (res) {
-          if (res.error && res.error()) return fin(null);
-          const u = res.data() || {};
-          const name = [u.NAME, u.LAST_NAME].filter(Boolean).join(' ').trim();
-          fin({ id: Number(u.ID) || null, name: name || u.EMAIL || null });
-        });
-      });
-    } catch (e) { fin(null); }
-  });
-}
 function author() {
   return (App.me && (App.me.id || App.me.name)) ? { id: App.me.id, name: App.me.name } : undefined;
 }
 function portalBase() { return 'https://' + ((App.boot && App.boot.me && App.boot.me.portal) || 'avrika.bitrix24.ru'); }
-const api = (url, opts) => {
-  const headers = { 'Content-Type': 'application/json' };
-  try { const sid = localStorage.getItem('eb_sid'); if (sid) headers['X-EB-SID'] = sid; } catch (e) {}
-  return fetch('/api' + url, Object.assign({ headers }, opts)).then(r => r.json());
-};
+const api = (url, opts) => fetch('/api' + url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts)).then(r => r.json());
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmt = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(Number(n) || 0));
 const money = (n, cur) => fmt(n) + ' ' + (cur || '');
@@ -1063,69 +1041,18 @@ function openContract(e) {
 }
 
 /* ---------- Bootstrap ---------- */
-// Чтение результата OAuth-колбэка из фрагмента URL (#uid&uname&sid)
-function readAuthFragment() {
-  const h = location.hash || '';
-  if (h.indexOf('uid=') < 0 && h.indexOf('uname=') < 0) return null;
-  const p = new URLSearchParams(h.replace(/^#/, ''));
-  return { uid: p.get('uid'), uname: p.get('uname'), sid: p.get('sid') };
-}
-function cleanAuthUrl() {
-  try { history.replaceState(null, '', location.pathname); } catch (e) {}
-  try { sessionStorage.removeItem('eb_authtry'); } catch (e) {}
-}
-// Определение текущего пользователя: OAuth-сессия портала → whoami → BX24 → дефолт.
+// Текущий пользователь — из заголовков шлюза Vibecode (открытие внутри портала).
 async function resolveIdentity() {
-  const frag = readAuthFragment();
-  if (frag && (frag.uid || frag.uname)) {
-    try { if (frag.sid) localStorage.setItem('eb_sid', frag.sid); } catch (e) {}
-    cleanAuthUrl();
-    if (frag.uname) return { id: frag.uid ? (Number(frag.uid) || frag.uid) : null, name: decodeURIComponent(frag.uname) };
-  }
   try {
     const w = await api('/whoami');
     if (w && w.user && w.user.name) return { id: w.user.id, name: w.user.name };
-    // needsAuth: НЕ редиректим iframe (страница авторизации портала блокируется X-Frame-Options).
-    // Идентификация — по кнопке «определить» через popup-окно (см. openAuthPopup).
   } catch (e) {}
-  const u = await resolveB24User();
-  if (u) return u;
   return { id: null, name: App.boot.me.name };
-}
-function whoHtml() {
-  const detLink = App.me && App.me.id ? '' : ' · <span class="wchg" id="whoDet">определить</span>';
-  return `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}${detLink}`;
-}
-function renderWho() {
-  $('#who').innerHTML = whoHtml();
-  const wd = $('#whoDet'); if (wd) wd.onclick = openAuthPopup;
-}
-function openAuthPopup() {
-  const w = 520, h = 680, y = (screen.height - h) / 2, x = (screen.width - w) / 2;
-  const p = window.open('/oauth/login', 'ebauth', `width=${w},height=${h},left=${x},top=${y}`);
-  if (!p) { toast('Разрешите всплывающие окна для определения пользователя'); }
-}
-// Приём результата авторизации из popup-окна
-window.addEventListener('message', (e) => {
-  const d = e.data && e.data.ebAuth;
-  if (!d) return;
-  if (d.sid) { try { localStorage.setItem('eb_sid', d.sid); } catch (x) {} }
-  if (d.uname) { App.me = { id: d.uid ? (Number(d.uid) || d.uid) : null, name: d.uname }; renderWho(); toast('Вы вошли как ' + d.uname); }
-  else { toast('Сессия создана, но имя не получено. Сообщите разработчику (нужна 1 правка)'); }
-});
-function authStatusFromUrl() {
-  const m = (location.search || '').match(/[?&]auth=([^&]+)/);
-  if (!m) return null;
-  const reasonM = (location.search || '').match(/[?&]reason=([^&]+)/);
-  return { status: m[1], reason: reasonM ? decodeURIComponent(reasonM[1]) : '' };
 }
 (async function init() {
   App.boot = await api('/bootstrap');
-  const authStatus = authStatusFromUrl();
   App.me = await resolveIdentity();
-  renderWho();
+  $('#who').innerHTML = `<b>${esc(App.me.name)}</b><br>${esc(App.boot.me.portal)}`;
   window.addEventListener('hashchange', router);
   router();
-  if (authStatus && authStatus.status === 'err') { toast('Определение пользователя не удалось (' + (authStatus.reason || 'ошибка') + ')'); try { history.replaceState(null, '', location.pathname); } catch (e) {} }
-  else if (authStatus && authStatus.status === 'ok' && App.me && App.me.id) { toast('Вы вошли как ' + App.me.name); }
 })();
