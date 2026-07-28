@@ -1041,8 +1041,8 @@ function openContract(e, vnum) {
     <div class="field"><label>Номер договора</label><input id="dg_number" placeholder="Например: 2026/07-01"></div>
     <div class="field"><label>Полное наименование компании</label><input id="dg_company" value="${esc(e.company || '')}" placeholder="Общество с ограниченной ответственностью «…»"></div>
     <div class="field"><label>Дата подписания договора</label><input type="date" id="dg_date"></div>
-    <div class="field"><label>Должность подписанта <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(в родительном падеже)</span></label><input id="dg_post" placeholder="директора / генерального директора"></div>
-    <div class="field"><label>ФИО заказчика (подписанта) <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(в родительном падеже)</span></label><input id="dg_fio" placeholder="Иванова Ивана Ивановича"></div>
+    <div class="field"><label>Должность подписанта</label><input id="dg_post" placeholder="Директор / Генеральный директор"></div>
+    <div class="field"><label>ФИО заказчика (подписанта)</label><input id="dg_fio" placeholder="Иванов Иван Иванович"></div>
     <hr class="hair" style="margin:6px 0 12px"><div class="sub" style="margin-bottom:8px">Контактное лицо со стороны заказчика (в спецификацию):</div>
     <div class="field"><label>ФИО контактного лица ${optSub}</label><input id="dg_cfio" placeholder="если отличается от подписанта"></div>
     <div class="field"><label>Телефон ${optSub}</label><input id="dg_phone"></div>

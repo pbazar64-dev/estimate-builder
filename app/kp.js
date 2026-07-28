@@ -283,6 +283,54 @@ function shortFio(fio) {
   if (p.length <= 1) return fio || '';
   return p[0] + ' ' + p.slice(1).map((x) => x.charAt(0).toUpperCase() + '.').join(' ');
 }
+
+// --- Должность подписанта в родительном падеже (оборот «в лице …») ---
+// Пользователь вводит должность в именительном падеже («Директор»),
+// в договоре она должна стоять в родительном («Директора»).
+const POST_GENITIVE = {
+  'заместитель директора': 'заместителя директора',
+  'заместитель генерального директора': 'заместителя генерального директора',
+  'председатель правления': 'председателя правления',
+  'управляющий': 'управляющего',
+  'главный бухгалтер': 'главного бухгалтера',
+  'владелец': 'владельца',
+};
+function _adjGen(w) {
+  const l = w.toLowerCase();
+  if (/(ый|ой)$/.test(l)) return w.slice(0, -2) + 'ого';
+  if (/ий$/.test(l)) {
+    const stem = w.slice(0, -2);
+    return stem + ('кгх'.includes(stem.slice(-1).toLowerCase()) ? 'ого' : 'его');
+  }
+  return null;
+}
+function _nounGen(w) {
+  const l = w.toLowerCase();
+  if (/[аяиыоеёу]$/.test(l)) return w;                 // уже зависимая/родительная форма — не трогаем
+  if (/ец$/.test(l)) return w.slice(0, -2) + 'ца';      // владелец → владельца
+  if (/[ьй]$/.test(l)) return w.slice(0, -1) + 'я';     // руководитель → руководителя
+  if (/[бвгдзклмнпрстфхцчшщ]$/i.test(l)) return w + 'а'; // директор → директора
+  return w;
+}
+function _isPrep(w) {
+  return ['по', 'при', 'над', 'под', 'от', 'до', 'из', 'в', 'во', 'на', 'о', 'об', 'для'].includes(w.toLowerCase());
+}
+function toGenitivePost(post) {
+  const s = String(post || '').trim().replace(/\s+/g, ' ');
+  if (!s) return s;
+  const dict = POST_GENITIVE[s.toLowerCase()];
+  if (dict) return /^[А-ЯЁ]/.test(s) ? dict.charAt(0).toUpperCase() + dict.slice(1) : dict;
+  let nounDone = false, stop = false;
+  return s.split(' ').map((w) => {
+    if (stop || nounDone) return w;
+    if (_isPrep(w)) { stop = true; return w; }
+    if (/^[А-ЯЁ]{2,}$/.test(w)) { nounDone = true; return w; } // аббревиатура (ИП, ООО) не склоняется
+    const a = _adjGen(w);
+    if (a) return a;              // прилагательное склоняем, идём дальше к существительному
+    nounDone = true;
+    return _nounGen(w);
+  }).join(' ');
+}
 function dateRuLong(d) { return d ? d.getUTCDate() + ' ' + MONTHS[d.getUTCMonth()] + ' ' + d.getUTCFullYear() + ' г.' : ''; }
 function stagesText(snap, rate, stages, currency) {
   const stageTitle = (code) => (stages.find((s) => s.code === code) || {}).title || code;
@@ -334,7 +382,7 @@ function buildContract(e, snap, stages, form, templatesDir) {
     '{{DG_DATE}}': esc(dateRuLong(signDate)),
     '{{DG_COMPANY_FULL}}': esc(form.companyFull || e.company || ''),
     '{{DG_COMPANY_SHORT}}': esc(e.company || form.companyFull || ''),
-    '{{DG_POST_GEN}}': esc(post),
+    '{{DG_POST_GEN}}': esc(toGenitivePost(post)),
     '{{DG_POST}}': esc(post),
     '{{DG_FIO_GEN}}': esc(fio),
     '{{DG_FIO_SHORT}}': esc(shortFio(fio)),
