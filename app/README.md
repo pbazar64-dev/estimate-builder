@@ -65,7 +65,7 @@ curl -s -X POST "$API/v1/infra/servers/$SERVER_ID/deploy?stream=false" \
     \"install\": \"mkdir -p /var/lib/estimate-builder && chown 999:988 /var/lib/estimate-builder && chmod 755 /var/lib/estimate-builder\",
     \"start\": \"node server.js\",
     \"port\": 3000,
-    \"env\": {\"NODE_ENV\": \"production\", \"VIBE_API_KEY\": \"$VIBE_API_KEY\", \"EB_DATA_DIR\": \"/var/lib/estimate-builder\"}
+    \"env\": {\"NODE_ENV\": \"production\", \"VIBE_API_KEY\": \"$VIBE_API_KEY\", \"EB_DATA_DIR\": \"/var/lib/estimate-builder\", \"EB_ADMIN_TOKEN\": \"$EB_ADMIN_TOKEN\"}
   }"
 ```
 
@@ -73,7 +73,27 @@ curl -s -X POST "$API/v1/infra/servers/$SERVER_ID/deploy?stream=false" \
 
 > `APP_KEY` — секретный ключ приложения (`vibe_app_*`); в репозиторий не коммитится,
 > передаётся через переменную окружения. `VIBE_API_KEY` — personal-ключ (`vibe_api_*`)
-> для чтения CRM портала; тоже секрет.
+> для чтения CRM портала; тоже секрет. `EB_ADMIN_TOKEN` — секретный токен для
+> резервного копирования/восстановления данных (см. ниже); задаётся в env, в репозиторий
+> не коммитится. **При каждом деплое передавайте те же env** — иначе токен/каталог данных сбросятся.
+
+## Резервная копия и восстановление данных (откат состояния)
+
+Полный снимок хранилища (`store.json`: сметы, каталог, страны) доступен через
+защищённые токеном эндпоинты (`EB_ADMIN_TOKEN`):
+
+```bash
+# Скачать резервную копию (снимок текущего состояния данных)
+curl -H "Authorization: Bearer <api-bearer>" \
+  "https://app-b0f7edb57b61.vibecode.bitrix24.tech/api/admin/backup?token=$EB_ADMIN_TOKEN" \
+  -o store-backup.json
+
+# Восстановить данные из копии (перед заменой сервер сам сохранит текущее
+# состояние в /var/lib/estimate-builder/store.prerestore-<timestamp>.json)
+curl -X POST -H "Content-Type: application/json" \
+  "https://app-b0f7edb57b61.vibecode.bitrix24.tech/api/admin/restore?token=$EB_ADMIN_TOKEN" \
+  --data-binary @store-backup.json
+```
 >
 > **Не указывайте `runtime`** — node уже установлен на сервере; шаг `runtime`
 > пытается переустановить его через deb.nodesource.com и падает в этом окружении.

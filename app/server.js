@@ -799,6 +799,30 @@ const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const query = Object.fromEntries(u.searchParams.entries());
+    // ---- Резервная копия / восстановление всего хранилища (для отката состояния) ----
+    // Защищено токеном EB_ADMIN_TOKEN (задаётся в env при деплое).
+    if (u.pathname === '/api/admin/backup' || u.pathname === '/api/admin/restore') {
+      const token = process.env.EB_ADMIN_TOKEN || '';
+      if (!token || query.token !== token) return sendJSON(res, 403, { error: 'forbidden' });
+      if (u.pathname === '/api/admin/backup' && req.method === 'GET') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="estimate-store-backup.json"',
+          'Cache-Control': 'no-store',
+        });
+        return res.end(JSON.stringify(store, null, 2));
+      }
+      if (u.pathname === '/api/admin/restore' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (!body || !Array.isArray(body.estimates)) return sendJSON(res, 400, { error: 'invalid store: estimates[] required' });
+        // перед заменой сохраняем текущее состояние рядом с данными (на случай ошибки)
+        try { fs.writeFileSync(path.join(DATA_DIR, 'store.prerestore-' + Date.now() + '.json'), JSON.stringify(store)); } catch (e) { /* ignore */ }
+        store = body;
+        persist();
+        return sendJSON(res, 200, { ok: true, estimates: (store.estimates || []).length });
+      }
+      return sendJSON(res, 405, { error: 'method not allowed' });
+    }
     if (u.pathname.startsWith('/api/')) {
       const parts = u.pathname.split('/').filter(Boolean); // ['api', ...]
       return await api(req, res, parts, query);
