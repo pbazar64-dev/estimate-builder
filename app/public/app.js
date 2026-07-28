@@ -493,7 +493,7 @@ async function viewCard(id) {
     </div>
     ${paymentSectionHtml(e, activeSnap)}
     <div class="phead" style="margin-top:34px"><div><span class="eyebrow">Версии</span>
-      <p class="dek" style="margin-top:4px">Действующая версия обведена зелёным кружком. Правый клик по номеру версии — сделать её действующей (может быть только одна). «Правка» — открыть версию в конструкторе; изменения сохранятся как новая версия. «＋ Новая версия» — создать копию действующей версии.</p></div>
+      <p class="dek" style="margin-top:4px">Действующая версия обведена зелёным кружком. Правый клик по номеру версии — сделать её действующей (может быть только одна). «Правка» — открыть версию в конструкторе; изменения сохранятся как новая версия. «＋ Новая версия» — начать версию с чистого листа (без услуг), компания/сделка/страна/название берутся из этой сметы.</p></div>
       <button class="btn" id="newVerBtn" style="align-self:flex-start;white-space:nowrap">＋ Новая версия</button></div>
     <div class="panel" style="padding:8px 24px">${verRows}</div>`;
 
@@ -513,16 +513,17 @@ async function viewCard(id) {
     toast('Версия v' + num + ' — действующая'); viewCard(e.id);
   });
   $('#app').querySelectorAll('[data-act]').forEach(b => b.onclick = () => docAction(b.dataset.act, e, Number(b.dataset.v)));
-  // создать новую версию (копия действующей; если версий нет — из текущего черновика)
+  // новая версия «с нуля»: чистый набор без услуг (как новая смета из реестра),
+  // компания/сделка/страна/название берутся из этой сметы. Открываем конструктор —
+  // после наполнения и сохранения появится новая версия.
   const nvb = $('#newVerBtn');
   if (nvb) nvb.onclick = async () => {
+    if (!confirm('Создать новую версию с чистого листа? Услуги не переносятся, текущий несохранённый черновик будет очищен.')) return;
     nvb.disabled = true;
-    const body = { author: author() };
-    if (activeNum) body.from = activeNum;
     try {
-      const v = await api('/estimates/' + e.id + '/versions', { method: 'POST', body: JSON.stringify(body) });
-      if (v && v.number) { toast('Создана версия v' + v.number); viewCard(e.id); }
-      else { toast('Не удалось создать версию'); nvb.disabled = false; }
+      await api('/estimates/' + e.id + '/blank-draft', { method: 'POST', body: JSON.stringify({}) });
+      toast('Новая версия — заполните услуги и сохраните');
+      location.hash = '#/edit/' + e.id;
     } catch (x) { toast('Ошибка создания версии'); nvb.disabled = false; }
   };
   // удалить версию

@@ -521,6 +521,15 @@ async function api(req, res, parts, query) {
       persist();
       return sendJSON(res, 200, { ok: true, computed: recalc(e.draft, e.rate) });
     }
+    // POST /api/estimates/:id/blank-draft — начать новую версию с чистого листа
+    // (стандартный набор этапов, без услуг). Компания/сделка/страна/название — из сметы.
+    if (method === 'POST' && sub === 'blank-draft') {
+      e.draft = { stages: defaultStages(), lines: [] };
+      e.editingFrom = null;
+      e.updatedAt = new Date().toISOString();
+      persist();
+      return sendJSON(res, 200, { ok: true, computed: recalc(e.draft, e.rate) });
+    }
     // POST /api/estimates/:id/edit-version { number } — загрузить снимок версии в черновик
     if (method === 'POST' && sub === 'edit-version') {
       const b = await readBody(req);
