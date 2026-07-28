@@ -12,7 +12,40 @@ const { buildKP, buildContract } = require('./kp');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
-const DATA_FILE = path.join(__dirname, 'data', 'store.json');
+
+// Каталог данных ДОЛЖЕН быть вне /opt/app: при каждом деплое шаг «clean»
+// затирает /opt/app целиком, поэтому store.json внутри приложения пропадал.
+// /var/lib/estimate-builder создаётся на этапе деплоя (install-hook, root) и
+// принадлежит пользователю приложения — переживает и деплой, и перезагрузку.
+// Порядок предпочтения: явный EB_DATA_DIR → /var/lib → /tmp → внутри приложения.
+function pickDataDir() {
+  const cands = [
+    process.env.EB_DATA_DIR,
+    '/var/lib/estimate-builder',
+    '/tmp/estimate-builder-data',
+    path.join(__dirname, 'data'),
+  ].filter(Boolean);
+  for (const d of cands) {
+    try { fs.mkdirSync(d, { recursive: true }); fs.accessSync(d, fs.constants.W_OK); return d; }
+    catch (e) { /* пробуем следующий */ }
+  }
+  return path.join(__dirname, 'data');
+}
+const DATA_DIR = pickDataDir();
+const DATA_FILE = path.join(DATA_DIR, 'store.json');
+// Одноразовая миграция: если в выбранном каталоге данных ещё нет, но они есть
+// в запасном месте (напр. остались в /tmp с прошлой версии) — переносим свежайшие.
+function migrateOldData() {
+  if (fs.existsSync(DATA_FILE)) return;
+  const legacy = ['/var/lib/estimate-builder', '/tmp/estimate-builder-data', path.join(__dirname, 'data')]
+    .map((d) => path.join(d, 'store.json'))
+    .filter((f) => f !== DATA_FILE && fs.existsSync(f));
+  let best = null, bestM = 0;
+  for (const f of legacy) {
+    try { const m = fs.statSync(f).mtimeMs; if (m > bestM) { bestM = m; best = f; } } catch (e) {}
+  }
+  if (best) { try { fs.copyFileSync(best, DATA_FILE); console.log('Migrated data from', best, '->', DATA_FILE); } catch (e) {} }
+}
 
 // Доступ к CRM портала Битрикс24 через API платформы Vibecode.
 // Нужен personal-ключ (vibe_api_*): читает crm.* без пользовательской сессии.
@@ -137,20 +170,24 @@ async function getAllCompanies() {
   return items;
 }
 
-// ---------- Хранилище (in-memory + best-effort persist на диск) ----------
+// ---------- Хранилище (in-memory + persist на диск, каталог вне /opt/app) ----------
 let store;
+try { migrateOldData(); } catch (e) { /* ignore */ }
 try {
   if (fs.existsSync(DATA_FILE)) {
     store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   }
 } catch (e) { /* ignore */ }
 if (!store) store = seedStore();
+console.log('Data dir:', DATA_DIR, '| store loaded:', fs.existsSync(DATA_FILE), '| estimates:', (store.estimates || []).length);
 
 function persist() {
   try {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(store));
-  } catch (e) { /* read-only fs — работаем из памяти */ }
+    const tmp = DATA_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(store));
+    fs.renameSync(tmp, DATA_FILE); // атомарная запись — не бьём файл при сбое
+  } catch (e) { console.error('persist failed:', e && e.message); }
 }
 
 const findEstimate = (id) => store.estimates.find((e) => e.id === id);

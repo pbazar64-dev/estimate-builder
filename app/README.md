@@ -60,10 +60,34 @@ VER=$(curl -s -X POST "$API/v1/apps/$APP_ID/sources" \
 # 3. Развернуть на сервере
 curl -s -X POST "$API/v1/infra/servers/$SERVER_ID/deploy?stream=false" \
   -H "X-Api-Key: $APP_KEY" -H "Content-Type: application/json" \
-  -d "{\"source\":{\"versionId\":\"$VER\"},\"runtime\":\"node20\",\"start\":\"node server.js\",\"port\":3000}"
+  -d "{
+    \"source\": {\"versionId\": \"$VER\"},
+    \"install\": \"mkdir -p /var/lib/estimate-builder && chown 999:988 /var/lib/estimate-builder && chmod 755 /var/lib/estimate-builder\",
+    \"start\": \"node server.js\",
+    \"port\": 3000,
+    \"env\": {\"NODE_ENV\": \"production\", \"VIBE_API_KEY\": \"$VIBE_API_KEY\", \"EB_DATA_DIR\": \"/var/lib/estimate-builder\"}
+  }"
 ```
 
 Приложение будет доступно по адресу **https://app-b0f7edb57b61.vibecode.bitrix24.tech**.
 
 > `APP_KEY` — секретный ключ приложения (`vibe_app_*`); в репозиторий не коммитится,
-> передаётся через переменную окружения.
+> передаётся через переменную окружения. `VIBE_API_KEY` — personal-ключ (`vibe_api_*`)
+> для чтения CRM портала; тоже секрет.
+>
+> **Не указывайте `runtime`** — node уже установлен на сервере; шаг `runtime`
+> пытается переустановить его через deb.nodesource.com и падает в этом окружении.
+
+## Хранение данных (важно!)
+
+Реестр смет хранится в `store.json`. Каталог данных **обязан быть вне `/opt/app`**:
+при каждом деплое шаг `clean` затирает `/opt/app` целиком, поэтому данные внутри
+приложения пропадали при любом деплое.
+
+- Приложение выбирает каталог данных в порядке: `EB_DATA_DIR` →
+  `/var/lib/estimate-builder` → `/tmp/...` → `<app>/data` (крайний случай).
+- `/var/lib/estimate-builder` создаётся под root на шаге `install` деплоя и
+  отдаётся во владение пользователю приложения `vibeapp` (uid **999**, gid **988**).
+  Этот каталог переживает и деплой (не входит в `clean`), и перезагрузку сервера.
+- Поэтому **каждый** деплой должен содержать `install`-хук и `EB_DATA_DIR` из примера
+  выше. Запись в `store.json` атомарна (`.tmp` + `rename`).
