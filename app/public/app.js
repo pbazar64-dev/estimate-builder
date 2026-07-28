@@ -21,8 +21,8 @@ function toast(msg) {
 }
 
 /* ---------- Клиентский пересчёт (зеркало server/calc.js, без маржи) ----------
-   «Управление проектом на этапе» — авто-строка: 20% от суммы часов пунктов этапа. */
-const PM_FACTOR = 0.2;
+   «Управление проектом на этапе» — авто-строка: 15% от суммы услуг в этапе. */
+const PM_FACTOR = 0.15;
 const _ceilH = (x) => Math.ceil(x - 1e-9);
 function effHours(line, baseSum) {
   if (line.formula && baseSum[line.formula.base]) {
@@ -654,7 +654,7 @@ function pmRowHtml(code, r) {
   const pm = (r.stagePM && r.stagePM[code]) || { pmExec: 0, pmClient: 0, pmAmount: 0 };
   return `<tr class="lvl-2 pmrow"><td></td><td class="tnum sub">авто</td>
     <td class="nm co">Управление проектом на этапе</td>
-    <td class="sub">20% от суммы часов пунктов этапа</td>
+    <td class="sub">15% от суммы услуг в этапе</td>
     <td class="r sub">—</td>
     <td class="r num" data-pm-exec="${code}">${pm.pmExec}</td>
     <td class="r num" data-pm-client="${code}">${pm.pmClient}</td>
@@ -855,7 +855,7 @@ function clientRows(e) {
       out.push({ no: `${si + 1}.${li + 1}`, name: l.name, desc: l.description, qty: l.qty, amount: r.amountById[l.id] || 0, lvl: 2, grp: l.isGroup });
       lines.filter(c => c.parentId === l.id).forEach((c, ci) => out.push({ no: `${si + 1}.${li + 1}.${ci + 1}`, name: c.name, desc: c.description, qty: c.qty, amount: r.amountById[c.id] || 0, lvl: 3 }));
     });
-    // авто-строка «Управление проектом на этапе» (20%)
+    // авто-строка «Управление проектом на этапе» (15%)
     const pm = r.stagePM[s.code];
     if (pm) out.push({ no: `${si + 1}.${tops.length + 1}`, name: 'Управление проектом на этапе', desc: 'Административное и операционное сопровождение проекта на этапе.', qty: null, amount: pm.pmAmount, lvl: 2 });
   });
