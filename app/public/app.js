@@ -25,9 +25,11 @@ function toast(msg) {
 const PM_FACTOR = 0.15;
 const _ceilH = (x) => Math.ceil(x - 1e-9);
 function effHours(line, baseSum) {
-  if (line.formula && baseSum[line.formula.base]) {
-    const b = baseSum[line.formula.base];
-    return { exec: _ceilH(line.formula.pct * b.exec), client: _ceilH(line.formula.pct * b.client), computed: true };
+  if (line.formula && !line.manualHours && line.formula.base != null) {
+    const bases = Array.isArray(line.formula.base) ? line.formula.base : [line.formula.base];
+    let exec = 0, client = 0, any = false;
+    for (const c of bases) { const b = baseSum[c]; if (b) { exec += b.exec; client += b.client; any = true; } }
+    if (any) return { exec: _ceilH(line.formula.pct * exec), client: _ceilH(line.formula.pct * client), computed: true };
   }
   return { exec: Number(line.hoursExecutor) || 0, client: Number(line.hoursClient) || 0, computed: false };
 }
@@ -667,6 +669,19 @@ function renderEditor() {
       inp.onblur = () => { inp.classList.remove('expanded'); inp.style.height = ''; };
     }
   });
+  // двойной клик по замку — перейти на ручной ввод часов (стартуем с текущих авто-значений)
+  $('#app').querySelectorAll('[data-lock]').forEach(sp => sp.ondblclick = () => {
+    const l = e.draft.lines.find(x => x.id === sp.dataset.lock); if (!l) return;
+    const h = (recalc(e.draft, e.rate).lineHours[l.id]) || { exec: 0, client: 0 };
+    l.manualHours = true; l.hoursExecutor = h.exec; l.hoursClient = h.client;
+    scheduleSave(); renderEditor();
+  });
+  // клик по значку возврата — снова авто-расчёт по формуле
+  $('#app').querySelectorAll('[data-revert]').forEach(sp => sp.onclick = () => {
+    const l = e.draft.lines.find(x => x.id === sp.dataset.revert); if (!l) return;
+    l.manualHours = false;
+    scheduleSave(); renderEditor();
+  });
 }
 // Авто-раскрытие поля названия/описания при редактировании — видно весь текст
 function autoGrow(el) {
@@ -699,12 +714,18 @@ function rowHtml(l, no, r, isGroup) {
   const isMulti = isF && Array.isArray(l.formula.base) && l.formula.base.indexOf('development') !== -1;
   const baseTxt = isMulti ? 'блоков «Настройка штатного функционала» и «Разработка»' : 'блока «Настройка штатного функционала»';
   const pctTxt = isF ? `${Math.round(l.formula.pct * 100)}% от ${baseTxt} (без управления проектом)` : '';
-  const hExec = isF
-    ? `<td class="r"><span class="hrs-lock" data-eff-exec="${l.id}" title="Считается автоматически: ${pctTxt}">${eff.exec} 🔒</span></td>`
-    : `<td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursExecutor" value="${l.hoursExecutor == null ? '' : l.hoursExecutor}"></td>`;
-  const hClient = isF
-    ? `<td class="r"><span class="hrs-lock" data-eff-client="${l.id}" title="Считается автоматически: ${pctTxt}">${eff.client} 🔒</span></td>`
-    : `<td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursClient" value="${l.hoursClient == null ? '' : l.hoursClient}"></td>`;
+  const manual = isF && l.manualHours;
+  let hExec, hClient;
+  if (isF && !manual) {
+    // авто-расчёт: замок, двойной клик — перейти на ручной ввод
+    hExec = `<td class="r"><span class="hrs-lock" data-lock="${l.id}" data-eff-exec="${l.id}" title="Считается автоматически: ${pctTxt}. Двойной клик — ручной ввод">${eff.exec} 🔒</span></td>`;
+    hClient = `<td class="r"><span class="hrs-lock" data-lock="${l.id}" data-eff-client="${l.id}" title="Считается автоматически: ${pctTxt}. Двойной клик — ручной ввод">${eff.client} 🔒</span></td>`;
+  } else {
+    // ручной ввод; для формула-услуг добавляем значок возврата к авто-расчёту
+    const revert = isF ? ` <span class="hrs-revert" data-revert="${l.id}" title="Вернуть автоматический расчёт (${pctTxt})">🔄</span>` : '';
+    hExec = `<td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursExecutor" value="${l.hoursExecutor == null ? '' : l.hoursExecutor}"></td>`;
+    hClient = `<td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursClient" value="${l.hoursClient == null ? '' : l.hoursClient}">${revert}</td>`;
+  }
   return `<tr class="${lvlClass}${isF ? ' formularow' : ''}"><td></td><td class="tnum sub">${no}</td>
     <td class="nm"><textarea class="cellinput" data-id="${l.id}" data-field="name" rows="1">${esc(l.name)}</textarea></td>
     <td><textarea class="cellinput" data-id="${l.id}" data-field="description" rows="1">${esc(l.description || '')}</textarea></td>
@@ -756,6 +777,7 @@ function catalogStages() {
   return App.boot.stages.slice().sort((a, b) => a.order - b.order).filter(s => present.has(s.code));
 }
 function catalogHours(c) {
+  if (c.formula) return '<b>рассчитывается автоматически</b>';
   return (c.hoursExecutor || c.hoursClient) ? `Исп. <b>${c.hoursExecutor} ч</b> · Клиент <b>${c.hoursClient} ч</b>` : '<b>оценка индивидуально</b>';
 }
 function groupByGroup(items) {

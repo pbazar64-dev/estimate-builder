@@ -186,11 +186,11 @@ const CATALOG = [
     "group": "",
     "name": "Написание ТЗ (технического задания)",
     "description": "Создание детального документа, регламентирующего состав, содержание, логику работы и ожидаемые результаты настраиваемых функциональных элементов портала.",
-    "hoursExecutor": 8,
-    "hoursClient": 16,
+    "hoursExecutor": 0,
+    "hoursClient": 0,
     "formula": {
       "base": ["setup", "development"],
-      "pct": 0.2
+      "pct": 0.3
     }
   },
   {
@@ -199,8 +199,8 @@ const CATALOG = [
     "group": "",
     "name": "Написание ЛТ (листа требований)",
     "description": "Создание документа, регламентирующего состав, логику работы и ожидаемые результаты настраиваемых функциональных элементов портала.",
-    "hoursExecutor": 4,
-    "hoursClient": 8,
+    "hoursExecutor": 0,
+    "hoursClient": 0,
     "formula": {
       "base": ["setup", "development"],
       "pct": 0.15
@@ -581,8 +581,8 @@ const CATALOG = [
     "group": "",
     "name": "Тестирование и корректировки настроек",
     "description": "Проведение комплексного тестирования системы Исполнителем и приёмка работ Заказчиком, формирование реестра корректировок, реализация выявленных корректировок, дополнений.",
-    "hoursExecutor": 6,
-    "hoursClient": 8,
+    "hoursExecutor": 0,
+    "hoursClient": 0,
     "formula": {
       "base": ["setup", "development"],
       "pct": 0.15
@@ -612,10 +612,10 @@ const CATALOG = [
     "group": "",
     "name": "Запись обучающих видео по настроенному функционалу",
     "description": "Запись кратких видеоинструкций по работе с основными настроенными элементами системы.",
-    "hoursExecutor": 1,
-    "hoursClient": 2,
+    "hoursExecutor": 0,
+    "hoursClient": 0,
     "formula": {
-      "base": "setup",
+      "base": ["setup", "development"],
       "pct": 0.02
     }
   },

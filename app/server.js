@@ -196,22 +196,37 @@ function persist() {
 // созданные сметы (draft + слепки версий). Идемпотентно: строки с массивом base
 // пропускаются. Существующие сметы при этом не теряются.
 function migrateFormulaBases() {
-  const TARGETS = ['Написание ТЗ', 'Написание ЛТ', 'Тестирование и корректировки'];
-  const isTarget = (l) => !!(l && l.formula && l.name && TARGETS.some((n) => String(l.name).indexOf(n) !== -1));
-  const fix = (l) => {
-    if (isTarget(l) && l.formula.base === 'setup') {
-      l.formula = { base: ['setup', 'development'], pct: l.formula.pct };
-      return true;
+  // Целевые формулы авто-услуг: часы = pct × (услуги «Настройка» без УП + услуги «Разработка» без УП).
+  // baseSum по определению не включает управление проектом, поэтому база = ['setup','development'].
+  const DESIRED = [
+    { match: 'Написание ТЗ', base: ['setup', 'development'], pct: 0.3 },
+    { match: 'Написание ЛТ', base: ['setup', 'development'], pct: 0.15 },
+    { match: 'Тестирование и корректировки', base: ['setup', 'development'], pct: 0.15 },
+    { match: 'Запись обучающих видео', base: ['setup', 'development'], pct: 0.02 },
+  ];
+  const fix = (l, isCatalog) => {
+    if (!l || !l.formula || !l.name) return false;
+    const d = DESIRED.find((x) => String(l.name).indexOf(x.match) !== -1);
+    if (!d) return false;
+    let changed = false;
+    const curBase = Array.isArray(l.formula.base) ? l.formula.base.join(',') : String(l.formula.base);
+    if (curBase !== d.base.join(',') || l.formula.pct !== d.pct) {
+      l.formula = { base: d.base.slice(), pct: d.pct };
+      changed = true;
     }
-    return false;
+    // В каталоге у авто-услуг убираем «проставленные» часы (считаются автоматически).
+    if (isCatalog && ((Number(l.hoursExecutor) || 0) !== 0 || (Number(l.hoursClient) || 0) !== 0)) {
+      l.hoursExecutor = 0; l.hoursClient = 0; changed = true;
+    }
+    return changed;
   };
   let changed = false;
-  for (const c of (store.catalog || [])) if (fix(c)) changed = true;
+  for (const c of (store.catalog || [])) if (fix(c, true)) changed = true;
   for (const e of (store.estimates || [])) {
-    for (const l of ((e.draft && e.draft.lines) || [])) if (fix(l)) changed = true;
-    for (const v of (e.versions || [])) for (const l of ((v.snapshot && v.snapshot.lines) || [])) if (fix(l)) changed = true;
+    for (const l of ((e.draft && e.draft.lines) || [])) if (fix(l, false)) changed = true;
+    for (const v of (e.versions || [])) for (const l of ((v.snapshot && v.snapshot.lines) || [])) if (fix(l, false)) changed = true;
   }
-  if (changed) { persist(); console.log('migrateFormulaBases: updated formula bases (setup+development)'); }
+  if (changed) { persist(); console.log('migrateFormulaBases: updated auto-service formulas'); }
 }
 try { migrateFormulaBases(); } catch (e) { console.error('migrateFormulaBases failed:', e && e.message); }
 

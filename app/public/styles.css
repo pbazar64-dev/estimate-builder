@@ -166,6 +166,9 @@ th.r,td.r{text-align:right}
 
 /* формула-услуги (авто-часы, редактирование часов запрещено) */
 .etbl tr.formularow td{background:#FBF7EF}
+.etbl .hrs-lock{cursor:pointer;user-select:none;white-space:nowrap}
+.etbl .hrs-revert{cursor:pointer;user-select:none;margin-left:4px;font-size:12px}
+.etbl .hrs-revert:hover{filter:brightness(1.1)}
 .hrs-lock{font-variant-numeric:tabular-nums;color:var(--ink-2);cursor:help;white-space:nowrap;font-size:12px}
 /* подытоги часов в шапке этапа */
 .stagehdr [data-stage-exec],.stagehdr [data-stage-client]{font-family:var(--sans);font-size:13px;font-weight:400;color:var(--ink-2)}

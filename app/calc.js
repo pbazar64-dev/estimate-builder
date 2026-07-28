@@ -15,7 +15,8 @@ const ceilH = (x) => Math.ceil(x - 1e-9); // вверх до целого час
 
 // Эффективные часы строки (с учётом формулы). baseSum: { [stage]: {exec, client} }
 function effHours(line, baseSum) {
-  if (line.formula && line.formula.base != null) {
+  // line.manualHours === true — часы введены вручную, формула отключена (пока не вернут авто)
+  if (line.formula && !line.manualHours && line.formula.base != null) {
     const bases = Array.isArray(line.formula.base) ? line.formula.base : [line.formula.base];
     let exec = 0, client = 0, any = false;
     for (const code of bases) {
