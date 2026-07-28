@@ -50,6 +50,7 @@ button{font-family:inherit}
 .btn.prim:hover{background:#000}
 .btn.sm{padding:7px 12px;font-size:10px}
 .btn.ghost{border-color:var(--line);color:var(--ink-2)}
+.btn.danger:hover{border-color:#C0392B;color:#C0392B;background:#FBEDEB}
 .btn:disabled{opacity:.4;cursor:default}
 
 /* tags/pills */

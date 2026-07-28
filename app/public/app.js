@@ -462,6 +462,7 @@ async function viewCard(id) {
       <button class="btn sm ghost" data-act="excel" data-v="${v.number}">Excel</button>
       <button class="btn sm ghost" data-act="kp" data-v="${v.number}">КП</button>
       <button class="btn sm ghost" data-act="contract" data-v="${v.number}">Договор</button>
+      <button class="btn sm ghost danger" data-delv="${v.number}" title="Удалить версию v${v.number}">🗑 Удалить</button>
     </div></div>`;
   }).join('') || '<p class="sub" style="padding:8px 0">Версий пока нет. Сохраните версию в конструкторе.</p>';
 
@@ -492,7 +493,8 @@ async function viewCard(id) {
     </div>
     ${paymentSectionHtml(e, activeSnap)}
     <div class="phead" style="margin-top:34px"><div><span class="eyebrow">Версии</span>
-      <p class="dek" style="margin-top:4px">Действующая версия обведена зелёным кружком. Правый клик по номеру версии — сделать её действующей (может быть только одна). «Правка» — открыть версию в конструкторе; изменения сохранятся как новая версия.</p></div></div>
+      <p class="dek" style="margin-top:4px">Действующая версия обведена зелёным кружком. Правый клик по номеру версии — сделать её действующей (может быть только одна). «Правка» — открыть версию в конструкторе; изменения сохранятся как новая версия. «＋ Новая версия» — создать копию действующей версии.</p></div>
+      <button class="btn" id="newVerBtn" style="align-self:flex-start;white-space:nowrap">＋ Новая версия</button></div>
     <div class="panel" style="padding:8px 24px">${verRows}</div>`;
 
   wirePaymentSection(e, () => activeSnap);
@@ -511,6 +513,27 @@ async function viewCard(id) {
     toast('Версия v' + num + ' — действующая'); viewCard(e.id);
   });
   $('#app').querySelectorAll('[data-act]').forEach(b => b.onclick = () => docAction(b.dataset.act, e, Number(b.dataset.v)));
+  // создать новую версию (копия действующей; если версий нет — из текущего черновика)
+  const nvb = $('#newVerBtn');
+  if (nvb) nvb.onclick = async () => {
+    nvb.disabled = true;
+    const body = { author: author() };
+    if (activeNum) body.from = activeNum;
+    try {
+      const v = await api('/estimates/' + e.id + '/versions', { method: 'POST', body: JSON.stringify(body) });
+      if (v && v.number) { toast('Создана версия v' + v.number); viewCard(e.id); }
+      else { toast('Не удалось создать версию'); nvb.disabled = false; }
+    } catch (x) { toast('Ошибка создания версии'); nvb.disabled = false; }
+  };
+  // удалить версию
+  $('#app').querySelectorAll('[data-delv]').forEach(b => b.onclick = async () => {
+    const num = Number(b.dataset.delv);
+    if (!confirm('Удалить версию v' + num + '? Действие необратимо.')) return;
+    try {
+      await api('/estimates/' + e.id + '/versions/' + num, { method: 'DELETE' });
+      toast('Версия v' + num + ' удалена'); viewCard(e.id);
+    } catch (x) { toast('Не удалось удалить версию'); }
+  });
 }
 
 /* ---------- Запуск проекта (смарт-процесс «Спецификации» + группа + задачи) ---------- */

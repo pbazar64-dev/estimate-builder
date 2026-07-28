@@ -542,25 +542,47 @@ async function api(req, res, parts, query) {
       persist();
       return sendJSON(res, 200, { ok: true, activeVersion: num });
     }
+    // DELETE /api/estimates/:id/versions/:num — удалить версию
+    if (method === 'DELETE' && sub === 'versions' && parts[4]) {
+      const num = Number(parts[4]);
+      const idx = (e.versions || []).findIndex((x) => x.number === num);
+      if (idx === -1) return sendJSON(res, 404, { error: 'version not found' });
+      e.versions.splice(idx, 1);
+      // если удалили действующую — назначаем действующей самую свежую из оставшихся
+      if (e.activeVersion === num) {
+        e.activeVersion = e.versions.length ? e.versions.reduce((m, v) => Math.max(m, v.number), 0) : null;
+      }
+      if (e.editingFrom === num) e.editingFrom = null;
+      e.updatedAt = new Date().toISOString();
+      persist();
+      return sendJSON(res, 200, { ok: true, activeVersion: e.activeVersion, versionCount: e.versions.length });
+    }
     // POST /api/estimates/:id/recalc
     if (method === 'POST' && sub === 'recalc') {
       const b = await readBody(req);
       const draft = b.draft || e.draft;
       return sendJSON(res, 200, recalc(draft, e.rate));
     }
-    // POST /api/estimates/:id/versions  (создать новую версию из текущего черновика)
+    // POST /api/estimates/:id/versions  (создать новую версию)
+    // По умолчанию — снимок текущего черновика. Если передан { from: N } (из карточки),
+    // новая версия создаётся как копия версии N.
     if (method === 'POST' && sub === 'versions' && !parts[4]) {
       const b = await readBody(req);
-      const r = recalc(e.draft, e.rate);
+      let baseSnap = e.draft, basedOn = e.editingFrom || null;
+      if (b.from != null) {
+        const fv = (e.versions || []).find((x) => x.number === Number(b.from));
+        if (fv && fv.snapshot) { baseSnap = fv.snapshot; basedOn = fv.number; }
+      }
+      const r = recalc(baseSnap, e.rate);
       const number = (e.versions.reduce((m, v) => Math.max(m, v.number), 0)) + 1;
       const a = reqAuthor(req, b);
       const who = a ? a.name : (e.updatedBy || e.responsible || 'Пользователь Битрикс24');
       const v = {
         number, author: who, comment: b.comment || '',
-        basedOn: e.editingFrom || null,
+        basedOn,
         currency: e.currency, rate: e.rate, totalAmount: r.total, durationDays: r.durationDays,
         createdAt: new Date().toISOString(),
-        snapshot: JSON.parse(JSON.stringify(e.draft)),
+        snapshot: JSON.parse(JSON.stringify(baseSnap)),
       };
       e.versions.push(v);
       e.activeVersion = number; // новая версия становится действующей
