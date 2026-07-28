@@ -105,6 +105,38 @@ async function vibeData(method, apiPath, body) {
   return r && (r.data !== undefined ? r.data : r);
 }
 
+// Полная выборка списочного эндпоинта портала через offset-пагинацию.
+// Шлюз отдаёт максимум 500 записей за запрос (meta.hasMore=true, если есть ещё),
+// поэтому проходим постранично, пока не выберем все записи.
+async function vibeListAll(basePath, { pageSize = 500, maxPages = 60 } = {}) {
+  const all = [];
+  for (let page = 0; page < maxPages; page++) {
+    const sep = basePath.includes('?') ? '&' : '?';
+    const resp = await vibeRequest('GET', `${basePath}${sep}limit=${pageSize}&offset=${all.length}`);
+    const batch = pickList(resp);
+    all.push(...batch);
+    const hasMore = resp && resp.meta ? !!resp.meta.hasMore : batch.length === pageSize;
+    if (!batch.length || !hasMore) break;
+  }
+  return all;
+}
+
+// Кэш всех компаний портала: клиент фильтрует список на своей стороне,
+// поэтому серверу нужно вернуть ПОЛНЫЙ список (не только первые 500).
+let _companiesCache = { at: 0, items: [] };
+const COMPANIES_TTL = 5 * 60 * 1000;
+async function getAllCompanies() {
+  const now = Date.now();
+  if (_companiesCache.items.length && now - _companiesCache.at < COMPANIES_TTL) return _companiesCache.items;
+  const raw = await vibeListAll('/companies?select=id,title');
+  const items = raw
+    .map((x) => ({ id: x.id, title: x.title }))
+    .filter((c) => c.id != null && c.title)
+    .sort((a, b) => String(a.title).localeCompare(String(b.title), 'ru'));
+  if (items.length) _companiesCache = { at: now, items };
+  return items;
+}
+
 // ---------- Хранилище (in-memory + best-effort persist на диск) ----------
 let store;
 try {
@@ -278,11 +310,10 @@ async function api(req, res, parts, query) {
       return sendJSON(res, 200, { source: 'demo', items: list });
     }
     try {
-      const resp = await vibeRequest('GET', '/companies?limit=500&select=id,title&order[title]=asc');
-      let items = pickList(resp).map((x) => ({ id: x.id, title: x.title }));
-      const q = (query.q || '').toLowerCase();
-      if (q) items = items.filter((c) => (c.title || '').toLowerCase().includes(q));
-      return sendJSON(res, 200, { source: 'portal', items });
+      const all = await getAllCompanies();
+      const q = (query.q || '').toLowerCase().trim();
+      const items = q ? all.filter((c) => (c.title || '').toLowerCase().includes(q)) : all;
+      return sendJSON(res, 200, { source: 'portal', items, total: all.length });
     } catch (e) {
       return sendJSON(res, 200, { source: 'demo', items: DEMO_COMPANIES, warning: String(e && e.message) });
     }
