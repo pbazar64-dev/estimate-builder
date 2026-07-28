@@ -238,4 +238,116 @@ function buildKP(e, snap, stages, templatesDir) {
   return writeZip(entries);
 }
 
-module.exports = { buildKP, TEMPLATE_BY_COUNTRY };
+// ================= ДОГОВОР =================
+const _ONES = ['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять', 'десять', 'одиннадцать', 'двенадцать', 'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать', 'восемнадцать', 'девятнадцать'];
+const _ONES_F = ['', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять', 'десять', 'одиннадцать', 'двенадцать', 'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать', 'восемнадцать', 'девятнадцать'];
+const _TENS = ['', '', 'двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят', 'семьдесят', 'восемьдесят', 'девяносто'];
+const _HUND = ['', 'сто', 'двести', 'триста', 'четыреста', 'пятьсот', 'шестьсот', 'семьсот', 'восемьсот', 'девятьсот'];
+const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+function plural(n, f) { const a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 20) return f[2]; if (b === 1) return f[0]; if (b > 1 && b < 5) return f[1]; return f[2]; }
+function _triple(num, fem) {
+  const w = []; const h = Math.floor(num / 100), t = Math.floor((num % 100) / 10), o = num % 10;
+  if (h) w.push(_HUND[h]);
+  if (t > 1) { w.push(_TENS[t]); if (o) w.push((fem ? _ONES_F : _ONES)[o]); }
+  else { const to = num % 100; if (to) w.push((fem ? _ONES_F : _ONES)[to]); }
+  return w.join(' ');
+}
+function num2wordsRu(n) {
+  n = Math.floor(Math.abs(Number(n) || 0));
+  if (n === 0) return 'ноль';
+  const g = []; let x = n; while (x > 0) { g.push(x % 1000); x = Math.floor(x / 1000); }
+  const parts = [];
+  for (let i = g.length - 1; i >= 0; i--) {
+    if (!g[i]) continue;
+    if (i === 0) parts.push(_triple(g[i], false));
+    else if (i === 1) { parts.push(_triple(g[i], true)); parts.push(plural(g[i], ['тысяча', 'тысячи', 'тысяч'])); }
+    else if (i === 2) { parts.push(_triple(g[i], false)); parts.push(plural(g[i], ['миллион', 'миллиона', 'миллионов'])); }
+    else { parts.push(_triple(g[i], false)); parts.push(plural(g[i], ['миллиард', 'миллиарда', 'миллиардов'])); }
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+function curMain(cur, n) {
+  if (cur === 'KZT') return 'тенге';
+  if (cur === 'BYN') return plural(n, ['белорусский рубль', 'белорусских рубля', 'белорусских рублей']);
+  return plural(n, ['рубль', 'рубля', 'рублей']);
+}
+function curShort(cur, n) { return cur === 'KZT' ? 'тенге' : plural(n, ['рубль', 'рубля', 'рублей']); }
+function kopWord(cur) { return cur === 'KZT' ? 'тиын' : 'копеек'; }
+function sumInWords(total, currency) {
+  const n = Math.round(Number(total) || 0);
+  return fmtNum(n) + ',00 (' + cap(num2wordsRu(n)) + ' ' + curMain(currency, n) + ' 00 ' + kopWord(currency) + ')';
+}
+function shortFio(fio) {
+  const p = String(fio || '').trim().split(/\s+/).filter(Boolean);
+  if (p.length <= 1) return fio || '';
+  return p[0] + ' ' + p.slice(1).map((x) => x.charAt(0).toUpperCase() + '.').join(' ');
+}
+function dateRuLong(d) { return d ? d.getUTCDate() + ' ' + MONTHS[d.getUTCMonth()] + ' ' + d.getUTCFullYear() + ' г.' : ''; }
+function stagesText(snap, rate, stages, currency) {
+  const stageTitle = (code) => (stages.find((s) => s.code === code) || {}).title || code;
+  const r = recalc(snap, rate);
+  return (snap.stages || []).filter((s) => s.on).sort((a, b) => a.order - b.order).map((s, i) => {
+    const amt = r.stageTotals[s.code] || 0;
+    return `Этап ${i + 1} (${stageTitle(s.code)}, п.${i + 1}): ${fmtNum(amt)} ${curShort(currency, amt)}.`;
+  });
+}
+function replaceTokenMultiline(doc, token, lines) {
+  if (doc.indexOf(token) < 0) return doc;
+  if (!lines.length) return doc.split(token).join('');
+  const joined = lines.map(esc).join('</w:t><w:br/><w:t xml:space="preserve">');
+  return doc.split(token).join(joined);
+}
+function removeParasWithToken(doc, token) {
+  let idx;
+  while ((idx = doc.indexOf(token)) >= 0) {
+    const re = /<w:p(?=[ >\/])/g; let start = -1, m;
+    while ((m = re.exec(doc)) && m.index < idx) start = m.index;
+    const end = doc.indexOf('</w:p>', idx);
+    if (start < 0 || end < 0) { doc = doc.split(token).join(''); break; }
+    doc = doc.slice(0, start) + doc.slice(end + 6);
+  }
+  return doc;
+}
+const CONTRACT_BY_COUNTRY = { ru: 'dg_ru.docx', by: 'dg_by.docx', kz: 'dg_kz.docx' };
+function buildContract(e, snap, stages, form, templatesDir) {
+  const file = CONTRACT_BY_COUNTRY[e.countryId] || 'dg_ru.docx';
+  const entries = readZip(fs.readFileSync(path.join(templatesDir, file)));
+  const docEntry = entries.get('word/document.xml');
+  if (!docEntry) throw new Error('template has no document.xml');
+  let doc = docEntry.toString('utf8');
+
+  const est = estimateRows(snap, e.rate, stages);
+  const pay = paymentSchedule(snap, e.rate, e.payment);
+  const signDate = parseDate(form.date) || (function () { const d = new Date(); d.setUTCHours(0, 0, 0, 0); return d; })();
+  const fio = (form.fio || '').trim();
+  const post = (form.post || '').trim();
+  const days = est.days;
+
+  doc = replaceParaWithTable(doc, '{{DG_ESTIMATE_TABLE}}', estimateTableXml(est));
+  doc = replaceParaWithTable(doc, '{{DG_PAYMENT_TABLE}}', paymentTableXml(pay, e.currency));
+  doc = replaceTokenMultiline(doc, '{{DG_STAGES}}', stagesText(snap, e.rate, stages, e.currency));
+  doc = removeParasWithToken(doc, '{{DG_STAGES_DROP}}');
+
+  const rep = {
+    '{{DG_NUMBER}}': esc(form.number || ''),
+    '{{DG_DATE}}': esc(dateRuLong(signDate)),
+    '{{DG_COMPANY_FULL}}': esc(form.companyFull || e.company || ''),
+    '{{DG_COMPANY_SHORT}}': esc(e.company || form.companyFull || ''),
+    '{{DG_POST_GEN}}': esc(post),
+    '{{DG_POST}}': esc(post),
+    '{{DG_FIO_GEN}}': esc(fio),
+    '{{DG_FIO_SHORT}}': esc(shortFio(fio)),
+    '{{DG_CONTACT_FIO}}': esc(form.contactFio || fio),
+    '{{DG_CONTACT_PHONE}}': esc(form.phone || ''),
+    '{{DG_CONTACT_EMAIL}}': esc(form.email || ''),
+    '{{DG_DAYS}}': esc(days + ' (' + num2wordsRu(days) + ') рабочих ' + plural(days, ['день', 'дня', 'дней'])),
+    '{{DG_SUM_WORDS}}': esc(sumInWords(est.total, e.currency)),
+  };
+  for (const k in rep) doc = doc.split(k).join(rep[k]);
+
+  entries.set('word/document.xml', Buffer.from(doc, 'utf8'));
+  return writeZip(entries);
+}
+
+module.exports = { buildKP, buildContract, TEMPLATE_BY_COUNTRY, CONTRACT_BY_COUNTRY };

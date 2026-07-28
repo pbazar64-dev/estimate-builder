@@ -849,7 +849,7 @@ function clientRows(e) {
 function docAction(act, e, vnum) {
   if (act === 'excel') return exportXLSX(e);
   if (act === 'kp') return downloadKP(e, vnum);
-  if (act === 'contract') return openContract(e);
+  if (act === 'contract') return openContract(e, vnum);
 }
 // КП — .docx по шаблону страны (сервер сам выбирает шаблон РФ/РБ/РК и вставляет таблицы)
 function downloadKP(e, vnum) {
@@ -1033,19 +1033,44 @@ function openKP(e) {
     <tbody>${body}<tr class="tot"><td></td><td>ИТОГО</td><td></td><td class="r">${fmt(total)}</td></tr></tbody></table>
     <p style="margin-top:20px"><b>Срок реализации:</b> ${days} рабочих дней. <b>Условия оплаты:</b> предоплата 50%, далее поэтапно.</p>`);
 }
-function openContract(e) {
-  const { rows, total } = clientRows(e);
-  const stageTot = rows.filter(r => r.lvl === 1);
-  const body = rows.map(r => `<tr class="${r.lvl === 1 ? 'l1' : r.lvl === 3 ? 'l3' : ''}">
-    <td>${r.no}</td><td>${esc(r.name)}${r.desc ? `<div class="muted">${esc(r.desc)}</div>` : ''}</td>
-    <td class="r">${r.lvl === 1 || r.grp ? '' : (r.qty == null ? '' : r.qty)}</td><td class="r">${fmt(r.amount)}</td></tr>`).join('');
-  docWindow('Спецификация к договору', `<div class="eyebrow">Приложение · Спецификация (протокол согласования цен)</div>
-    <h1>Спецификация № 1</h1>
-    <p class="muted">Заказчик: ${esc(e.company || '—')} · Исполнитель: ООО «Ава Тетис»</p>
-    <p><b>Стоимость услуг:</b> ${money(total, e.currency)} без НДС, в том числе по этапам:</p>
-    <ul class="muted">${stageTot.map(s => `<li>${esc(s.name)}: ${money(s.amount, e.currency)}</li>`).join('')}</ul>
-    <table><thead><tr><th>№</th><th>Этап / услуга</th><th class="r">Кол-во</th><th class="r">Стоимость, ${esc(e.currency)}</th></tr></thead>
-    <tbody>${body}<tr class="tot"><td></td><td>ИТОГО</td><td></td><td class="r">${fmt(total)}</td></tr></tbody></table>`);
+// Договор — модальная форма данных, затем генерация .docx по шаблону страны
+function openContract(e, vnum) {
+  const optSub = '<span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(необязательно)</span>';
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div class="box"><h3>Договор — данные для генерации</h3>
+    <div class="field"><label>Номер договора</label><input id="dg_number" placeholder="Например: 2026/07-01"></div>
+    <div class="field"><label>Полное наименование компании</label><input id="dg_company" value="${esc(e.company || '')}" placeholder="Общество с ограниченной ответственностью «…»"></div>
+    <div class="field"><label>Дата подписания договора</label><input type="date" id="dg_date"></div>
+    <div class="field"><label>Должность подписанта</label><input id="dg_post" placeholder="Директор / Генеральный директор"></div>
+    <div class="field"><label>ФИО заказчика (подписанта)</label><input id="dg_fio" placeholder="Иванов Иван Иванович"></div>
+    <hr class="hair" style="margin:6px 0 12px"><div class="sub" style="margin-bottom:8px">Контактное лицо со стороны заказчика (в спецификацию):</div>
+    <div class="field"><label>ФИО контактного лица ${optSub}</label><input id="dg_cfio" placeholder="если отличается от подписанта"></div>
+    <div class="field"><label>Телефон ${optSub}</label><input id="dg_phone"></div>
+    <div class="field"><label>Email ${optSub}</label><input id="dg_email"></div>
+    <div class="acts"><button class="btn ghost" id="dg_cancel">Отмена</button><button class="btn prim" id="dg_ok">Сгенерировать договор →</button></div></div>`;
+  document.body.appendChild(m);
+  $('#dg_cancel').onclick = () => m.remove();
+  m.onclick = (ev) => { if (ev.target === m) m.remove(); };
+  $('#dg_ok').onclick = async () => {
+    const number = $('#dg_number').value.trim();
+    if (!number) { toast('Укажите номер договора'); $('#dg_number').focus(); return; }
+    const body = {
+      v: vnum || null, number,
+      companyFull: $('#dg_company').value.trim(), date: $('#dg_date').value,
+      post: $('#dg_post').value.trim(), fio: $('#dg_fio').value.trim(),
+      contactFio: $('#dg_cfio').value.trim(), phone: $('#dg_phone').value.trim(), email: $('#dg_email').value.trim(),
+    };
+    const btn = $('#dg_ok'); btn.disabled = true; btn.textContent = 'Генерация…';
+    try {
+      const resp = await fetch('/api/estimates/' + e.id + '/contract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!resp.ok) { const err = await resp.json().catch(() => ({})); toast('Ошибка: ' + (err.message || resp.status)); btn.disabled = false; btn.textContent = 'Сгенерировать договор →'; return; }
+      const blob = await resp.blob();
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = (e.company ? e.company + ' — ' : '') + 'Договор.docx'; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      m.remove(); toast('Договор сгенерирован');
+    } catch (x) { toast('Ошибка генерации'); btn.disabled = false; btn.textContent = 'Сгенерировать договор →'; }
+  };
 }
 
 /* ---------- Bootstrap ---------- */

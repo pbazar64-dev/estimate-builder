@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS } = require('./seed');
 const { recalc } = require('./calc');
-const { buildKP, TEMPLATE_BY_COUNTRY } = require('./kp');
+const { buildKP, buildContract } = require('./kp');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
@@ -397,6 +397,25 @@ async function api(req, res, parts, query) {
         return res.end(buf);
       } catch (err) {
         return sendJSON(res, 500, { error: 'kp_failed', message: String(err && err.message) });
+      }
+    }
+    // POST /api/estimates/:id/contract — генерация договора в .docx (форма в теле, ?v=N)
+    if (method === 'POST' && sub === 'contract') {
+      const b = await readBody(req);
+      const active = activeVersionOf(e);
+      let snap = (active && active.snapshot) ? active.snapshot : e.draft;
+      if (b.v) { const v = (e.versions || []).find((x) => x.number === Number(b.v)); if (v && v.snapshot) snap = v.snapshot; }
+      try {
+        const buf = buildContract(e, snap, store.stages, b, path.join(__dirname, 'templates'));
+        const base = ((e.company ? e.company + ' — ' : '') + 'Договор').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Договор';
+        res.writeHead(200, {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'Content-Disposition': "attachment; filename=\"Contract.docx\"; filename*=UTF-8''" + encodeURIComponent(base) + '.docx',
+          'Content-Length': buf.length, 'Cache-Control': 'no-store',
+        });
+        return res.end(buf);
+      } catch (err) {
+        return sendJSON(res, 500, { error: 'contract_failed', message: String(err && err.message) });
       }
     }
     // PUT /api/estimates/:id/draft
