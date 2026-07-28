@@ -341,7 +341,8 @@ function buildContract(e, snap, stages, form, templatesDir) {
     '{{DG_CONTACT_FIO}}': esc(form.contactFio || fio),
     '{{DG_CONTACT_PHONE}}': esc(form.phone || ''),
     '{{DG_CONTACT_EMAIL}}': esc(form.email || ''),
-    '{{DG_DAYS}}': esc(days + ' (' + num2wordsRu(days) + ') рабочих ' + plural(days, ['день', 'дня', 'дней'])),
+    // В шаблоне после {{DG_DAYS}} уже идёт «рабочих дней», поэтому здесь только число прописью
+    '{{DG_DAYS}}': esc(days + ' (' + num2wordsRu(days) + ')'),
     '{{DG_SUM_WORDS}}': esc(sumInWords(est.total, e.currency)),
   };
   for (const k in rep) doc = doc.split(k).join(rep[k]);
