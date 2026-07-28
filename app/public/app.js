@@ -630,12 +630,25 @@ function renderEditor() {
   $('#app').querySelectorAll('[data-stage]').forEach(p => p.onclick = () => { const s = e.draft.stages.find(x => x.code === p.dataset.stage); s.on = !s.on; scheduleSave(); renderEditor(); });
   $('#app').querySelectorAll('[data-add]').forEach(b => b.onclick = () => addLine(b.dataset.add));
   $('#app').querySelectorAll('[data-del]').forEach(b => b.onclick = () => delLine(b.dataset.del));
-  $('#app').querySelectorAll('.etbl input').forEach(inp => inp.oninput = () => {
-    const l = e.draft.lines.find(x => x.id === inp.dataset.id); if (!l) return;
-    const f = inp.dataset.field;
-    l[f] = (f === 'name' || f === 'description') ? inp.value : (inp.value === '' ? (f === 'qty' ? null : 0) : Number(inp.value));
-    scheduleSave(); liveTotals();
+  $('#app').querySelectorAll('.etbl input, .etbl textarea').forEach(inp => {
+    inp.oninput = () => {
+      const l = e.draft.lines.find(x => x.id === inp.dataset.id); if (!l) return;
+      const f = inp.dataset.field;
+      l[f] = (f === 'name' || f === 'description') ? inp.value : (inp.value === '' ? (f === 'qty' ? null : 0) : Number(inp.value));
+      if (inp.tagName === 'TEXTAREA') autoGrow(inp);
+      scheduleSave(); liveTotals();
+    };
+    if (inp.tagName === 'TEXTAREA') {
+      inp.onfocus = () => autoGrow(inp);
+      inp.onblur = () => { inp.classList.remove('expanded'); inp.style.height = ''; };
+    }
   });
+}
+// Авто-раскрытие поля названия/описания при редактировании — видно весь текст
+function autoGrow(el) {
+  el.classList.add('expanded');
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight + 2, 320) + 'px';
 }
 function pmRowHtml(code, r) {
   const pm = (r.stagePM && r.stagePM[code]) || { pmExec: 0, pmClient: 0, pmAmount: 0 };
@@ -654,12 +667,14 @@ function rowHtml(l, no, r, isGroup) {
   const lvlClass = l.parentId == null ? 'lvl-2' : 'lvl-3';
   if (isGroup) {
     return `<tr class="${lvlClass} grp"><td></td><td class="tnum sub">${no}</td>
-      <td class="nm"><input data-id="${l.id}" data-field="name" value="${esc(l.name)}" style="font-weight:700"></td>
+      <td class="nm"><textarea class="cellinput" data-id="${l.id}" data-field="name" rows="1" style="font-weight:700">${esc(l.name)}</textarea></td>
       <td colspan="4" class="sub">Группа услуг</td><td class="r num co" data-amt="${l.id}">${fmt(amt)}</td>
       <td class="r"><span class="del" data-del="${l.id}">✕</span></td></tr>`;
   }
   const isF = !!l.formula;
-  const pctTxt = isF ? `${Math.round(l.formula.pct * 100)}% от блока «Настройка штатного функционала» (без управления проектом)` : '';
+  const isMulti = isF && Array.isArray(l.formula.base) && l.formula.base.indexOf('development') !== -1;
+  const baseTxt = isMulti ? 'блоков «Настройка штатного функционала» и «Разработка»' : 'блока «Настройка штатного функционала»';
+  const pctTxt = isF ? `${Math.round(l.formula.pct * 100)}% от ${baseTxt} (без управления проектом)` : '';
   const hExec = isF
     ? `<td class="r"><span class="hrs-lock" data-eff-exec="${l.id}" title="Считается автоматически: ${pctTxt}">${eff.exec} 🔒</span></td>`
     : `<td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursExecutor" value="${l.hoursExecutor == null ? '' : l.hoursExecutor}"></td>`;
@@ -667,8 +682,8 @@ function rowHtml(l, no, r, isGroup) {
     ? `<td class="r"><span class="hrs-lock" data-eff-client="${l.id}" title="Считается автоматически: ${pctTxt}">${eff.client} 🔒</span></td>`
     : `<td class="r"><input class="r hrs" data-id="${l.id}" data-field="hoursClient" value="${l.hoursClient == null ? '' : l.hoursClient}"></td>`;
   return `<tr class="${lvlClass}${isF ? ' formularow' : ''}"><td></td><td class="tnum sub">${no}</td>
-    <td class="nm"><input data-id="${l.id}" data-field="name" value="${esc(l.name)}"></td>
-    <td><input data-id="${l.id}" data-field="description" value="${esc(l.description || '')}"></td>
+    <td class="nm"><textarea class="cellinput" data-id="${l.id}" data-field="name" rows="1">${esc(l.name)}</textarea></td>
+    <td><textarea class="cellinput" data-id="${l.id}" data-field="description" rows="1">${esc(l.description || '')}</textarea></td>
     <td class="r"><input class="r qty" data-id="${l.id}" data-field="qty" value="${l.qty == null ? '' : l.qty}"></td>
     ${hExec}${hClient}
     <td class="r num co" data-amt="${l.id}">${fmt(amt)}</td>
@@ -851,13 +866,27 @@ function docAction(act, e, vnum) {
   if (act === 'kp') return downloadKP(e, vnum);
   if (act === 'contract') return openContract(e, vnum);
 }
-// КП — .docx по шаблону страны (сервер сам выбирает шаблон РФ/РБ/РК и вставляет таблицы)
-function downloadKP(e, vnum) {
+// КП — .docx по шаблону страны (сервер сам выбирает шаблон РФ/РБ/РК и вставляет таблицы).
+// Скачиваем через fetch()+blob (тот же авторизованный канал, что и все /api-запросы),
+// а не через прямую ссылку <a href> — иначе у части пользователей шлюз отдаёт JSON.
+async function downloadKP(e, vnum) {
   const url = '/api/estimates/' + e.id + '/kp' + (vnum ? ('?v=' + vnum) : '');
-  const a = document.createElement('a');
-  a.href = url; a.download = ''; document.body.appendChild(a); a.click();
-  setTimeout(() => a.remove(), 100);
   toast('Генерация КП (.docx)…');
+  try {
+    const resp = await fetch(url, { headers: {} });
+    const ct = resp.headers.get('content-type') || '';
+    if (!resp.ok || ct.indexOf('json') !== -1 || ct.indexOf('wordprocessing') === -1) {
+      const err = await resp.json().catch(() => ({}));
+      toast('Ошибка КП: ' + (err.message || resp.status));
+      return;
+    }
+    const blob = await resp.blob();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = (e.company ? e.company + ' — ' : '') + 'КП' + (vnum ? ' v' + vnum : '') + '.docx';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    toast('КП сгенерировано');
+  } catch (x) { toast('Ошибка генерации КП'); }
 }
 
 /* ---- Генерация настоящего XLSX без зависимостей (номера — текст, тонкие границы) ---- */

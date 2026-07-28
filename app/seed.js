@@ -189,7 +189,7 @@ const CATALOG = [
     "hoursExecutor": 8,
     "hoursClient": 16,
     "formula": {
-      "base": "setup",
+      "base": ["setup", "development"],
       "pct": 0.2
     }
   },
@@ -202,7 +202,7 @@ const CATALOG = [
     "hoursExecutor": 4,
     "hoursClient": 8,
     "formula": {
-      "base": "setup",
+      "base": ["setup", "development"],
       "pct": 0.15
     }
   },
@@ -584,7 +584,7 @@ const CATALOG = [
     "hoursExecutor": 6,
     "hoursClient": 8,
     "formula": {
-      "base": "setup",
+      "base": ["setup", "development"],
       "pct": 0.15
     }
   },
@@ -663,8 +663,8 @@ function konakovoLines() {
     { id: 'ln4', stage: 'setup', level: 3, parentId: 'ln_crm', name: 'Настройка прав доступа к CRM', description: 'до 7 ролей', qty: 1, hoursExecutor: 1, hoursClient: 2, isGroup: false },
     gInt,
     { id: 'ln5', stage: 'setup', level: 3, parentId: 'ln_int', name: 'Интеграция с телефонией', description: 'ВАТС / ип-телефония Б24', qty: 1, hoursExecutor: 6, hoursClient: 8, isGroup: false },
-    { id: 'ln6', stage: 'modeling', level: 2, parentId: null, name: 'Написание ЛТ (листа требований)', description: 'Создание документа требований.', qty: 1, hoursExecutor: 4, hoursClient: 8, isGroup: false, formula: { base: 'setup', pct: 0.15 } },
-    { id: 'ln7', stage: 'trial', level: 2, parentId: null, name: 'Тестирование и корректировки', description: 'Комплексное тестирование и приёмка.', qty: 1, hoursExecutor: 6, hoursClient: 8, isGroup: false, formula: { base: 'setup', pct: 0.15 } },
+    { id: 'ln6', stage: 'modeling', level: 2, parentId: null, name: 'Написание ЛТ (листа требований)', description: 'Создание документа требований.', qty: 1, hoursExecutor: 4, hoursClient: 8, isGroup: false, formula: { base: ['setup', 'development'], pct: 0.15 } },
+    { id: 'ln7', stage: 'trial', level: 2, parentId: null, name: 'Тестирование и корректировки', description: 'Комплексное тестирование и приёмка.', qty: 1, hoursExecutor: 6, hoursClient: 8, isGroup: false, formula: { base: ['setup', 'development'], pct: 0.15 } },
   ];
 }
 

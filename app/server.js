@@ -190,6 +190,31 @@ function persist() {
   } catch (e) { console.error('persist failed:', e && e.message); }
 }
 
+// Миграция базы формулы для «Написание ТЗ/ЛТ» и «Тестирование и корректировки»:
+// часы считаются от суммы «Настройка штатного функционала» + «Разработка» (без
+// управления проектом), а не только от «Настройки». Обновляем и каталог, и уже
+// созданные сметы (draft + слепки версий). Идемпотентно: строки с массивом base
+// пропускаются. Существующие сметы при этом не теряются.
+function migrateFormulaBases() {
+  const TARGETS = ['Написание ТЗ', 'Написание ЛТ', 'Тестирование и корректировки'];
+  const isTarget = (l) => !!(l && l.formula && l.name && TARGETS.some((n) => String(l.name).indexOf(n) !== -1));
+  const fix = (l) => {
+    if (isTarget(l) && l.formula.base === 'setup') {
+      l.formula = { base: ['setup', 'development'], pct: l.formula.pct };
+      return true;
+    }
+    return false;
+  };
+  let changed = false;
+  for (const c of (store.catalog || [])) if (fix(c)) changed = true;
+  for (const e of (store.estimates || [])) {
+    for (const l of ((e.draft && e.draft.lines) || [])) if (fix(l)) changed = true;
+    for (const v of (e.versions || [])) for (const l of ((v.snapshot && v.snapshot.lines) || [])) if (fix(l)) changed = true;
+  }
+  if (changed) { persist(); console.log('migrateFormulaBases: updated formula bases (setup+development)'); }
+}
+try { migrateFormulaBases(); } catch (e) { console.error('migrateFormulaBases failed:', e && e.message); }
+
 const findEstimate = (id) => store.estimates.find((e) => e.id === id);
 const country = (id) => store.countries.find((c) => c.id === id);
 

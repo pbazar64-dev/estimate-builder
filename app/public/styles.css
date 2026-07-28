@@ -89,6 +89,10 @@ th.r,td.r{text-align:right}
 .etbl td{padding:8px 10px}
 .etbl input{font-family:var(--sans);font-size:13px;border:1px solid transparent;background:transparent;padding:5px 6px;width:100%;color:var(--ink)}
 .etbl input:focus{border-color:var(--line);background:var(--field);outline:none}
+/* Название/описание — авто-растущее поле: свёрнуто в 1 строку, при правке раскрывается */
+.etbl textarea.cellinput{font-family:var(--sans);font-size:13px;border:1px solid transparent;background:transparent;padding:5px 6px;width:100%;color:var(--ink);resize:none;overflow:hidden;height:30px;line-height:19px;display:block;vertical-align:top}
+.etbl textarea.cellinput:focus{border-color:var(--line);background:var(--field);outline:none}
+.etbl textarea.cellinput.expanded{background:var(--field);box-shadow:0 3px 14px rgba(0,0,0,.10);position:relative;z-index:3}
 .etbl input.r{text-align:right}
 .etbl .qty{width:64px} .etbl .hrs{width:64px}
 .stagehdr td{background:#F7F4EE;border-top:1px solid var(--ink);font-family:var(--serif);font-size:16px;font-weight:700}

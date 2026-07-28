@@ -4,8 +4,9 @@
 //   Стоимость строки = Ставка × Трудозатраты Клиенту × Количество
 //   Итог группы/этапа = Σ дочерних стоимостей
 // «Управление проектом на этапе» — авто-строка: 20% часов пунктов этапа (вверх до целого).
-// Формула-услуги (line.formula = { base:'setup', pct }) — часы считаются как
-//   pct × (сумма часов пунктов блока base, без управления проектом), вверх до целого.
+// Формула-услуги (line.formula = { base:'setup', pct } или base:['setup','development']) —
+//   часы считаются как pct × (сумма часов пунктов блоков base, без управления проектом),
+//   вверх до целого. base может быть строкой (один этап) или массивом этапов (сумма).
 //   Такие услуги нельзя редактировать по часам вручную.
 'use strict';
 
@@ -14,9 +15,14 @@ const ceilH = (x) => Math.ceil(x - 1e-9); // вверх до целого час
 
 // Эффективные часы строки (с учётом формулы). baseSum: { [stage]: {exec, client} }
 function effHours(line, baseSum) {
-  if (line.formula && baseSum[line.formula.base]) {
-    const b = baseSum[line.formula.base];
-    return { exec: ceilH(line.formula.pct * b.exec), client: ceilH(line.formula.pct * b.client), computed: true };
+  if (line.formula && line.formula.base != null) {
+    const bases = Array.isArray(line.formula.base) ? line.formula.base : [line.formula.base];
+    let exec = 0, client = 0, any = false;
+    for (const code of bases) {
+      const b = baseSum[code];
+      if (b) { exec += b.exec; client += b.client; any = true; }
+    }
+    if (any) return { exec: ceilH(line.formula.pct * exec), client: ceilH(line.formula.pct * client), computed: true };
   }
   return { exec: Number(line.hoursExecutor) || 0, client: Number(line.hoursClient) || 0, computed: false };
 }
