@@ -735,8 +735,14 @@ async function launchProject(e, form) {
   const specItem = await vibeData('POST', '/items/1040', fields);
   const si = (specItem && specItem.item) ? specItem.item : specItem;
   const specId = (si && (si.id != null ? si.id : si.ID)) || null;
-  // привязка задач к элементу смарт-процесса «Спецификации» (UF_CRM_TASK: T<entityTypeId>_<id>)
-  const crmBind = specId ? ['T' + SPEC.entityTypeId + '_' + specId] : undefined;
+  // Привязка задач к элементу смарт-процесса «Спецификации» через поле задачи
+  // «Элемент CRM» (UF_CRM_TASK). Код привязки для смарт-процесса — это короткий
+  // символьный код типа (SYMBOL_CODE_SHORT): префикс 'T' + entityTypeId в
+  // ШЕСТНАДЦАТЕРИЧНОМ виде, а НЕ в десятичном. Напр. 1040 → 0x410 → 'T410'.
+  // Десятичное 'T1040' — некорректный код, Битрикс24 молча его отбрасывает,
+  // и спецификация не прикрепляется к задаче.
+  const specAbbr = 'T' + Number(SPEC.entityTypeId).toString(16); // 1040 → 'T410'
+  const crmBind = specId ? [specAbbr + '_' + specId] : undefined;
 
   // 2) Группа-проект
   let groupId = form.projectId ? Number(form.projectId) : null;
