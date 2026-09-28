@@ -11,6 +11,12 @@
 'use strict';
 
 const PM_FACTOR = 0.15;
+// Часов в день на проект (поле сметы draft.hoursPerDay, целое 1..8). Срок = ⌈часы клиента / часов в день⌉.
+const DEFAULT_HOURS_PER_DAY = 2;
+function hoursPerDayOf(draft) {
+  const h = Math.round(Number(draft && draft.hoursPerDay));
+  return h >= 1 && h <= 8 ? h : DEFAULT_HOURS_PER_DAY;
+}
 const ceilH = (x) => Math.ceil(x - 1e-9); // вверх до целого часа
 
 // Эффективные часы строки (с учётом формулы). baseSum: { [stage]: {exec, client} }
@@ -98,8 +104,9 @@ function recalc(draft, rate) {
     hoursExecutor += a.exec + pmExec;
   }
 
-  const durationDays = Math.max(1, Math.round(hoursClient * 0.5));
-  return { amountById, lineHours, baseSum, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, pmFactor: PM_FACTOR };
+  const hoursPerDay = hoursPerDayOf(draft);
+  const durationDays = Math.max(1, ceilH(hoursClient / hoursPerDay));
+  return { amountById, lineHours, baseSum, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, hoursPerDay, pmFactor: PM_FACTOR };
 }
 
-module.exports = { recalc, PM_FACTOR };
+module.exports = { recalc, PM_FACTOR, hoursPerDayOf, DEFAULT_HOURS_PER_DAY };

@@ -7,7 +7,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS } = require('./seed');
-const { recalc } = require('./calc');
+const { recalc, hoursPerDayOf } = require('./calc');
 const { buildKP, buildContract } = require('./kp');
 const { parseEstimateFile, sanitizeDraft } = require('./importer');
 
@@ -586,6 +586,7 @@ async function api(req, res, parts, query) {
       const b = await readBody(req);
       if (b.stages) e.draft.stages = b.stages;
       if (b.lines) e.draft.lines = b.lines;
+      if (b.hoursPerDay != null) e.draft.hoursPerDay = hoursPerDayOf({ hoursPerDay: b.hoursPerDay });
       e.updatedAt = new Date().toISOString();
       { const a = reqAuthor(req, b); if (a) e.updatedBy = a.name; }
       persist();
@@ -606,7 +607,8 @@ async function api(req, res, parts, query) {
     // POST /api/estimates/:id/blank-draft — начать новую версию с чистого листа
     // (стандартный набор этапов, без услуг). Компания/сделка/страна/название — из сметы.
     if (method === 'POST' && sub === 'blank-draft') {
-      e.draft = { stages: defaultStages(), lines: [] };
+      // «часов в день» сохраняем из текущей сметы
+      e.draft = { stages: defaultStages(), lines: [], hoursPerDay: hoursPerDayOf(e.draft) };
       e.editingFrom = null;
       e.updatedAt = new Date().toISOString();
       persist();

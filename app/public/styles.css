@@ -225,3 +225,5 @@ tr.filtrow th{padding:6px 8px;border-bottom:1px solid var(--line);background:#FC
 .imp-sheet{display:block;margin-bottom:8px;font-size:12px;color:var(--ink-2)}
 .imp-sheet select{margin-left:6px;padding:4px 6px;border:1px solid var(--line);background:#fff;font-family:var(--sans)}
 .imp-diff{color:#b9770e}
+.hpd{display:inline-flex;align-items:center;gap:8px}
+.hpd input{width:56px;padding:5px 6px;border:1px solid var(--line);background:#fff;font-family:var(--sans);font-size:15px;text-align:center}

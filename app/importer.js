@@ -13,6 +13,7 @@
 
 const { readZip } = require('./kp');
 const { nid } = require('./seed');
+const { recalc, hoursPerDayOf } = require('./calc');
 
 // ---------- Табличные данные из файла ----------
 function xmlDecode(s) {
@@ -251,7 +252,15 @@ function parseSheet(rows, ctx) {
 
   // 1) строки → узлы
   const nodes = [];
-  let curStage = null, fileTotal = null, pmSkipped = 0, unknownStage = false;
+  let curStage = null, fileTotal = null, fileHours = null, pmSkipped = 0, unknownStage = false;
+  // «Срок реализации в днях | 148» — может стоять в любой колонке (в шаблоне — в колонке описания)
+  let fileDays = null;
+  for (let r = hdr.index + 1; r < rows.length && fileDays == null; r++) {
+    const row = rows[r] || [];
+    const i = row.findIndex((c) => typeof c === 'string' && /^срок\s+(реализации|выполнения|работ)?.*\s(в\s+)?(рабочих\s+)?(днях|дней|дн\.?)$/.test(low(c)));
+    if (i === -1) continue;
+    for (let j = i + 1; j < row.length; j++) { const d = num(row[j]); if (d != null && d > 0) { fileDays = d; break; } }
+  }
   const warnings = new Set();
   for (let r = hdr.index + 1; r < rows.length; r++) {
     const row = rows[r] || [];
@@ -270,7 +279,11 @@ function parseSheet(rows, ctx) {
       qty: num(at(row, 'qty')), hExec: num(at(row, 'hExec')), hClient: num(at(row, 'hClient')),
       price: num(at(row, 'price')), amount: num(at(row, 'amount')),
     };
-    if (TOTAL_RE.test(lname)) { if (v.amount != null && fileTotal == null) fileTotal = v.amount; continue; }
+    if (TOTAL_RE.test(lname)) {
+      if (v.amount != null && fileTotal == null) fileTotal = v.amount;
+      if (v.hClient != null && fileHours == null) fileHours = v.hClient;
+      continue;
+    }
     if (PM_RE.test(lname)) { pmSkipped++; continue; }
 
     if (M.stage != null && norm(at(row, 'stage'))) {
@@ -379,7 +392,7 @@ function parseSheet(rows, ctx) {
     draft: { stages: ctx.stages.map((s) => ({ code: s.code, on: used.has(s.code), order: s.order })), lines },
     warnings: [...warnings],
     stats: { services, groups: lines.length - services, stages: used.size },
-    services, fileTotal, impliedRate,
+    services, fileTotal, fileHours, fileDays, impliedRate,
     hasHours: M.hClient != null || M.hExec != null,
     currency: sheetCurrency(rows, hdr.index),
   };
@@ -400,6 +413,19 @@ function detectCountry(res, countries) {
     if (byRate.length === 1) return byRate[0].id;
   }
   return null;
+}
+
+function detectHoursPerDay(hours, days) {
+  if (!(hours > 0) || !(days > 0)) return null;
+  const ok = [];
+  for (let h = 1; h <= 8; h++) if (Math.max(1, Math.ceil(hours / h - 1e-9)) === Math.round(days)) ok.push(h);
+  if (!ok.length) {
+    // округление в файле могло быть другим — берём ближайшее, если расхождение не больше дня
+    let best = null;
+    for (let h = 1; h <= 8; h++) { const diff = Math.abs(hours / h - days); if (diff <= 1 && (!best || diff < best.diff)) best = { h, diff }; }
+    return best ? best.h : null;
+  }
+  return ok.sort((a, b) => Math.abs(hours / a - days) - Math.abs(hours / b - days))[0];
 }
 
 // buf — содержимое файла; opts: { rate, stages (store.stages), catalog, countries, sheet }
@@ -436,7 +462,12 @@ function parseEstimateFile(buf, fileName, opts) {
     rate = Number(opts.rate(countryId)) || baseRate;
     if (rate !== baseRate) res = parseAt(pick.sheet.rows, rate);
   }
+  // Часов в день: подбираем целое 1..8, при котором ⌈часы клиента / N⌉ = срок в днях из файла
+  const hc = res.fileHours != null ? res.fileHours : recalc(res.draft, rate).hoursClient;
+  const hpd = detectHoursPerDay(hc, res.fileDays);
+  res.draft.hoursPerDay = hpd || hoursPerDayOf(null);
   const warnings = res.warnings.slice();
+  if (res.fileDays && !hpd) warnings.push(`Срок в файле (${res.fileDays} дн.) не соответствует целому числу часов в день от 1 до 8 — взято значение по умолчанию`);
   if (res.impliedRate && rate && Math.abs(res.impliedRate - rate) / rate > 0.01) {
     warnings.unshift(`Ставка в файле ≈ ${res.impliedRate}/ч, в конструкторе — ${rate}/ч: стоимость пересчитана по ставке конструктора`);
   }
@@ -446,6 +477,7 @@ function parseEstimateFile(buf, fileName, opts) {
     sheet: pick.sheet.name,
     sheets: found.map((f) => ({ name: f.sheet.name, services: f.res.services, fileTotal: f.res.fileTotal })),
     fileTotal: res.fileTotal, currency: res.currency, detectedCountryId: countryId,
+    fileDays: res.fileDays, hoursPerDaySource: hpd ? 'file' : 'default',
   };
 }
 
@@ -474,7 +506,7 @@ function sanitizeDraft(d, stageDefs) {
   }
   for (const l of lines) if (l.parentId && !ids.has(l.parentId)) { l.parentId = null; l.level = 2; }
   if (!lines.length) return null;
-  return { stages, lines };
+  return { stages, lines, hoursPerDay: hoursPerDayOf(d) };
 }
 
 module.exports = { parseEstimateFile, sanitizeDraft, xlsxSheets };

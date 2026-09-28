@@ -23,6 +23,8 @@ function toast(msg) {
 /* ---------- Клиентский пересчёт (зеркало server/calc.js, без маржи) ----------
    «Управление проектом на этапе» — авто-строка: 15% от суммы услуг в этапе. */
 const PM_FACTOR = 0.15;
+const DEFAULT_HOURS_PER_DAY = 2; // часов в день на проект по умолчанию (поле сметы 1..8)
+function hoursPerDayOf(draft) { const h = Math.round(Number(draft && draft.hoursPerDay)); return h >= 1 && h <= 8 ? h : DEFAULT_HOURS_PER_DAY; }
 const _ceilH = (x) => Math.ceil(x - 1e-9);
 function effHours(line, baseSum) {
   if (line.formula && !line.manualHours && line.formula.base != null) {
@@ -81,8 +83,9 @@ function recalc(draft, rate) {
     stageTotals[c] = stageTotal; total += stageTotal;
     hoursClient += a.client + pmClient; hoursExecutor += a.exec + pmExec;
   }
-  const durationDays = Math.max(1, Math.round(hoursClient * 0.5));
-  return { amountById, lineHours, baseSum, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, pmFactor: PM_FACTOR };
+  const hoursPerDay = hoursPerDayOf(draft);
+  const durationDays = Math.max(1, ceilH(hoursClient / hoursPerDay));
+  return { amountById, lineHours, baseSum, stageTotals, stagePM, total, hoursClient, hoursExecutor, durationDays, hoursPerDay, pmFactor: PM_FACTOR };
 }
 
 /* ---------- График платежей ----------
@@ -506,6 +509,7 @@ function importPreviewHtml(res, currency) {
     <div><b>Распознано:</b> услуг ${res.stats.services}${res.stats.groups ? ', групп ' + res.stats.groups : ''}, этапов ${res.stats.stages}</div>
     <ul class="imp-list">${perStage}</ul>
     <div>Итого с управлением проектом: <b>${fmt(r.total)} ${esc(currency || '')}</b> · часы клиенту ${r.hoursClient} · исполнителю ${r.hoursExecutor}</div>
+    <div>Срок: <b>${r.durationDays} дн.</b> · часов в день: <b>${r.hoursPerDay}</b>${res.hoursPerDaySource === 'file' ? ` (определено по сроку в файле${res.fileDays ? ' — ' + res.fileDays + ' дн.' : ''})` : ' (по умолчанию — в файле нет срока)'}</div>
     ${fileTot}
     ${warns ? `<ul class="imp-list imp-warn">${warns}</ul>` : ''}</div>`;
 }
@@ -626,7 +630,7 @@ async function viewCard(id) {
         <hr class="hair">
         <div style="display:flex;justify-content:space-between"><span class="sub">Активных этапов</span><span class="tnum co">${activeSnap.stages.filter(s => s.on).length} из ${activeSnap.stages.length}</span></div>
         <div style="display:flex;justify-content:space-between"><span class="sub">Часы клиенту · исполнителю</span><span class="tnum co">${r.hoursClient} · ${r.hoursExecutor}</span></div>
-        <div style="display:flex;justify-content:space-between"><span class="sub">Срок реализации</span><span class="tnum co">${r.durationDays} дн.</span></div>
+        <div style="display:flex;justify-content:space-between"><span class="sub">Срок реализации</span><span class="tnum co">${r.durationDays} дн. · ${r.hoursPerDay} ч/день</span></div>
         <hr class="hair">
         <button class="btn prim" id="editBtn">Открыть конструктор</button>
         ${e.versions.length ? '<button class="btn" id="launchBtn" style="background:var(--ok);border-color:var(--ok);color:#fff">🚀 Запустить проект</button>' : ''}
@@ -737,7 +741,7 @@ function scheduleSave() {
   clearTimeout(App.saveTimer);
   App.saveTimer = setTimeout(async () => {
     const e = App.estimate;
-    await api('/estimates/' + e.id + '/draft', { method: 'PUT', body: JSON.stringify({ stages: e.draft.stages, lines: e.draft.lines, author: author() }) });
+    await api('/estimates/' + e.id + '/draft', { method: 'PUT', body: JSON.stringify({ stages: e.draft.stages, lines: e.draft.lines, hoursPerDay: e.draft.hoursPerDay, author: author() }) });
     const s = $('#saveState'); if (s) { s.textContent = 'Сохранено ' + new Date().toLocaleTimeString('ru-RU').slice(0, 5); }
   }, 500);
 }
@@ -785,6 +789,8 @@ function renderEditor() {
       <div class="totbar">
         <span><span class="eyebrow">Итого</span> <b class="tnum">${fmt(r.total)} ${esc(e.currency)}</b></span>
         <span><span class="eyebrow">Часы клиенту</span> <b class="tnum" style="font-size:20px">${r.hoursClient}</b></span>
+        <label class="hpd" title="Сколько часов в день выделяется на проект. Срок = часы клиента ÷ часов в день (вверх до целого)"><span class="eyebrow">Часов в день</span>
+          <input type="number" id="hpd" min="1" max="8" step="1" value="${r.hoursPerDay}"></label>
         <span><span class="eyebrow">Срок</span> <b class="tnum" style="font-size:20px">${r.durationDays} дн.</b></span>
         <span class="sub" style="flex:1;text-align:right">Стоимость = Ставка × Часы клиента × Кол-во</span>
       </div>
@@ -793,6 +799,18 @@ function renderEditor() {
 
   $('#backBtn').onclick = () => location.hash = '#/e/' + e.id;
   $('#saveVer').onclick = saveVersion;
+  // часов в день на проект — целое 1..8; пересчитывает срок (и даты графика платежей)
+  const hpd = $('#hpd');
+  hpd.oninput = () => {
+    const v = Math.round(Number(hpd.value));
+    if (!(v >= 1 && v <= 8)) return; // пока вводят — не сохраняем некорректное
+    e.draft.hoursPerDay = v; scheduleSave(); liveTotals();
+  };
+  hpd.onchange = () => {
+    const v = Math.min(8, Math.max(1, Math.round(Number(hpd.value)) || hoursPerDayOf(e.draft)));
+    hpd.value = v;
+    if (v !== e.draft.hoursPerDay) { e.draft.hoursPerDay = v; scheduleSave(); liveTotals(); }
+  };
   $('#fromCat').onclick = openCatalogPicker;
   wirePaymentSection(e, () => e.draft);
   $('#app').querySelectorAll('[data-stage]').forEach(p => p.onclick = () => { const s = e.draft.stages.find(x => x.code === p.dataset.stage); s.on = !s.on; scheduleSave(); renderEditor(); });
@@ -909,7 +927,7 @@ function delLine(id) {
 }
 async function saveVersion() {
   const e = App.estimate;
-  await api('/estimates/' + e.id + '/draft', { method: 'PUT', body: JSON.stringify({ stages: e.draft.stages, lines: e.draft.lines, author: author() }) });
+  await api('/estimates/' + e.id + '/draft', { method: 'PUT', body: JSON.stringify({ stages: e.draft.stages, lines: e.draft.lines, hoursPerDay: e.draft.hoursPerDay, author: author() }) });
   const v = await api('/estimates/' + e.id + '/versions', { method: 'POST', body: JSON.stringify({ author: author() }) });
   toast('Сохранено как версия v' + (v && v.number)); location.hash = '#/e/' + e.id;
 }
