@@ -93,6 +93,26 @@ curl -s -X POST "$API/v1/infra/servers/$SID/deploy?stream=false" -H "X-Api-Key: 
   переживает деплой и перезагрузку).
 - **Передавай те же env при КАЖДОМ деплое** — иначе `EB_ADMIN_TOKEN`/каталог данных сбросятся.
 
+### Деплой personal-ключом `vibe_api_*` (без `APP_KEY`) — проверено 28.09.2026
+
+- Сервер привязан к **приложению `8e7500d9-32e6-4828-9a8c-72f5d76635f4`** (не 966a…): версии
+  из `POST /v1/apps/966a…/sources` деплой по этому ключу не видит (`SOURCE_VERSION_NOT_FOUND`),
+  а загрузка в `/v1/apps/8e7500d9…/sources` отвечала `SOURCE_STORAGE_ERROR`.
+- Рабочий путь: архив прямо в теле деплоя — `"source": {"content": "<base64 tar.gz>"}` (до ~72 МБ
+  архива; у нас ~22 МБ). Платформа сама сохраняет снимок (`source.savedVersionId`, напр. `v3`),
+  его потом можно передеплоить через `"source": {"versionId": "v3"}` тем же ключом.
+- Остальное как в рецепте: `install`-хук, `EB_DATA_DIR`, без `runtime`, те же env.
+- Проверка после деплоя без доступа к домену приложения: `POST /v1/infra/servers/$SID/exec`
+  `{"command": "journalctl -u app -n 20; curl -s localhost:3000/api/health", "timeout": 60}` —
+  в логе строка `Data dir: /var/lib/estimate-builder | store loaded: true | estimates: N`.
+
+### Смена ключа `VIBE_API_KEY` без простоя
+
+Перевыпуск в личном кабинете VibeCode создаёт новый ключ, старый действует ещё 24 часа, привязка
+сервера переносится на новый ключ. Порядок: перевыпустить → передеплоить последнюю сохранённую
+версию (`source.versionId`) с новым `VIBE_API_KEY` и тем же `EB_ADMIN_TOKEN` → проверить через
+`/exec`, что `/api/crm/companies` отдаёт `"source":"portal"`. Старый ключ не отзывать вручную.
+
 ## Backup / restore данных (откат состояния)
 
 ```bash
