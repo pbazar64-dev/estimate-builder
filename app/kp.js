@@ -113,20 +113,21 @@ function paymentSchedule(snap, rate, payment) {
     const p1 = Math.round(total * 0.5);
     const d1 = addWorkingDays(sign, 3);
     rows.push({ no: 1, name: 'Аванс', sum: p1, term: AV, date: d1, docs: 'Акт' });
-    let prevSum = p1, prevDate = d1;
-    if (n >= 2) {
-      const t2 = ceilD(prevSum / rate / 3);
-      const d2 = prevDate ? addWorkingDays(prevDate, t2) : null;
-      const s2 = (amounts[1] || 0) - p1 + (amounts[0] || 0);
-      rows.push({ no: 2, name: 'Доплата за этап 2', sum: s2, term: termPrev(t2), date: d2, docs: 'Акт' });
-      prevSum = s2; prevDate = d2;
-    }
-    for (let k = 3; k <= n; k++) {
+    // Платежи 2..n — накопительно, без отрицательных (как в расчётном шаблоне Ава Тетис):
+    // платёж k = max(0, Σ этапов 1..k − уже оплачено), последний = ИТОГО − оплачено.
+    // Нулевой платёж (аванс перекрыл этапы) сворачивается — остаток уходит в следующий этап.
+    let paid = p1, cum = amounts[0] || 0, prevSum = p1, prevDate = d1;
+    for (let k = 2; k <= n; k++) {
+      const before = cum;
+      cum += amounts[k - 1] || 0;
+      const sk = k === n ? Math.max(0, Math.round(total) - paid) : Math.max(0, Math.round(cum) - paid);
+      if (sk <= 0) continue;
       const tk = ceilD(prevSum / rate / 3);
       const dk = prevDate ? addWorkingDays(prevDate, tk) : null;
-      const sk = amounts[k - 1] || 0;
-      rows.push({ no: k, name: 'Предоплата за этап ' + k, sum: sk, term: termPrev(tk), date: dk, docs: 'Акт' });
-      prevSum = sk; prevDate = dk;
+      const name = k === 2 ? 'Доплата за этап 2'
+        : 'Предоплата за этап ' + k + (paid > Math.round(before) ? ' (остаток)' : '');
+      rows.push({ no: rows.length + 1, name, sum: sk, term: termPrev(tk), date: dk, docs: 'Акт' });
+      paid += sk; prevSum = sk; prevDate = dk;
     }
   }
   return { rows };
