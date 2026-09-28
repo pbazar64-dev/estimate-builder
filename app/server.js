@@ -433,18 +433,28 @@ async function api(req, res, parts, query) {
     }
   }
 
-  // POST /api/import/parse { fileName, fileBase64, countryId | estimateId } — разбор файла сметы
-  // (предпросмотр; в хранилище ничего не пишет). Ставка нужна, чтобы восстановить часы из стоимости.
+  // POST /api/import/parse { fileName, fileBase64, countryId | estimateId, autoCountry, sheet } — разбор
+  // файла сметы (предпросмотр; в хранилище ничего не пишет). Ставка нужна, чтобы восстановить часы
+  // из стоимости. autoCountry — взять страну по валюте/ставке из файла (для новой сметы).
   if (method === 'POST' && parts[1] === 'import' && parts[2] === 'parse') {
     const b = await readBody(req);
     if (!b.fileBase64) return sendJSON(res, 400, { error: 'file_required', message: 'Файл не передан (или больше 3,5 МБ)' });
     const est = b.estimateId ? findEstimate(b.estimateId) : null;
-    const c = est ? null : (country(b.countryId) || store.countries[0]);
-    const rate = est ? est.rate : c.rate;
+    const fallback = country(b.countryId) || store.countries[0];
+    let used = est ? null : fallback;
+    const rateFn = (detectedId) => {
+      if (est) return est.rate;
+      used = (b.autoCountry && detectedId && country(detectedId)) || fallback;
+      return used.rate;
+    };
     try {
       const buf = Buffer.from(String(b.fileBase64), 'base64');
-      const out = parseEstimateFile(buf, b.fileName, { rate, stages: store.stages, catalog: store.catalog });
-      return sendJSON(res, 200, { ...out, rate, computed: recalc(out.draft, rate) });
+      const out = parseEstimateFile(buf, b.fileName, {
+        rate: rateFn, stages: store.stages, catalog: store.catalog, countries: store.countries,
+        sheet: b.sheet != null ? String(b.sheet) : null,
+      });
+      const rate = est ? est.rate : used.rate;
+      return sendJSON(res, 200, { ...out, rate, countryId: est ? est.countryId : used.id, computed: recalc(out.draft, rate) });
     } catch (err) {
       return sendJSON(res, 400, { error: 'parse_failed', message: String(err && err.message) });
     }

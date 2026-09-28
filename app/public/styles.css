@@ -222,3 +222,6 @@ tr.filtrow th{padding:6px 8px;border-bottom:1px solid var(--line);background:#FC
 .imp-err{border:1px solid #c0392b;color:#c0392b;padding:10px 12px;font-size:13px}
 .imp-list{margin:6px 0 6px 18px;padding:0}
 .imp-warn{color:var(--ink-2);font-size:12px}
+.imp-sheet{display:block;margin-bottom:8px;font-size:12px;color:var(--ink-2)}
+.imp-sheet select{margin-left:6px;padding:4px 6px;border:1px solid var(--line);background:#fff;font-family:var(--sans)}
+.imp-diff{color:#b9770e}

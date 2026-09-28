@@ -346,7 +346,7 @@ async function viewRegistry() {
 async function openWizard(opts) {
   opts = opts || {};
   const imp = !!opts.importFile;
-  const fileState = { name: '', b64: '', parsed: null, seq: 0 };
+  const fileState = { name: '', b64: '', parsed: null, seq: 0, sheet: null, auto: false };
   let sel = App.boot.countries[0].id;
   let companies = { source: 'demo', items: [] };
   try { companies = await api('/crm/companies'); } catch (e) {}
@@ -386,12 +386,16 @@ async function openWizard(opts) {
     const seq = ++fileState.seq;
     fileState.parsed = null;
     $('#w_preview').innerHTML = '<span class="sub">Разбор файла…</span>';
-    const res = await api('/import/parse', { method: 'POST', body: JSON.stringify({ fileName: fileState.name, fileBase64: fileState.b64, countryId: sel }) }).catch(() => ({ error: 'network' }));
+    const req = { fileName: fileState.name, fileBase64: fileState.b64, countryId: sel, autoCountry: fileState.auto, sheet: fileState.sheet };
+    const res = await api('/import/parse', { method: 'POST', body: JSON.stringify(req) }).catch(() => ({ error: 'network' }));
     if (seq !== fileState.seq) return;
     if (!res || res.error) { $('#w_preview').innerHTML = `<div class="imp-err">Не удалось прочитать файл: ${esc((res && res.message) || 'ошибка сети')}</div>`; return; }
-    fileState.parsed = res;
+    fileState.parsed = res; fileState.auto = false; fileState.sheet = res.sheet;
+    // страна по валюте/ставке из файла
+    if (res.countryId && res.countryId !== sel) { sel = res.countryId; $('#w_cnts').innerHTML = cnts(); rebind(); }
     const c = App.boot.countries.find(x => x.id === sel) || {};
     $('#w_preview').innerHTML = importPreviewHtml(res, c.currency);
+    wireSheetSelect(m, (name) => { fileState.sheet = name; parseFile(); });
   }
   const rebind = () => m.querySelectorAll('.cnt').forEach(el => el.onclick = () => { sel = el.dataset.id; $('#w_cnts').innerHTML = cnts(); rebind(); parseFile(); });
   rebind();
@@ -402,7 +406,7 @@ async function openWizard(opts) {
       fileState.name = ''; fileState.b64 = ''; fileState.parsed = null; $('#w_preview').innerHTML = '';
       if (!f) return;
       if (f.size > IMPORT_MAX) { $('#w_preview').innerHTML = '<div class="imp-err">Файл больше 3,5 МБ</div>'; return; }
-      fileState.name = f.name; fileState.b64 = await fileToBase64(f);
+      fileState.name = f.name; fileState.b64 = await fileToBase64(f); fileState.sheet = null; fileState.auto = true;
       if (!$('#w_title').value.trim()) $('#w_title').value = f.name.replace(/\.[^.]+$/, '');
       parseFile();
     };
@@ -479,7 +483,7 @@ async function openWizard(opts) {
 
 /* ---------- Импорт сметы из файла (.xlsx / .csv) ---------- */
 const IMPORT_MAX = 3.5 * 1024 * 1024;
-const IMPORT_HINT = 'Колонки: №, Наименование, Описание, Кол-во, Часы исполнителя, Часы клиента (или Стоимость). Этапы — строками-заголовками. Подходит и выгрузка Excel из конструктора.';
+const IMPORT_HINT = 'Подходит расчётная смета Ава Тетис (лист «Расчёты…»: берутся строки с количеством > 0), выгрузка Excel из конструктора или простая таблица: №, Наименование, Описание, Кол-во, Часы исполнителя, Часы клиента (или Стоимость).';
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -494,11 +498,21 @@ function importPreviewHtml(res, currency) {
   const perStage = res.draft.stages.filter(s => s.on).sort((a, b) => a.order - b.order)
     .map(s => `<li>${esc(stageTitle(s.code))}: <b>${lines.filter(l => l.stage === s.code && !l.isGroup).length}</b> усл. · ${fmt((r.stageTotals || {})[s.code])} ${esc(currency || '')}</li>`).join('');
   const warns = (res.warnings || []).map(w => `<li>${esc(w)}</li>`).join('');
-  return `<div class="imp-ok">
+  const sheetSel = (res.sheets || []).length > 1
+    ? `<label class="imp-sheet">Лист: <select data-imp-sheet>${res.sheets.map(sh => `<option value="${esc(sh.name)}" ${sh.name === res.sheet ? 'selected' : ''}>${esc(sh.name)} · услуг ${sh.services}</option>`).join('')}</select></label>` : '';
+  const same = res.fileTotal != null && Math.round(res.fileTotal) === Math.round(r.total || 0);
+  const fileTot = res.fileTotal != null
+    ? `<div class="${same ? '' : 'imp-diff'}">ИТОГО в файле: <b>${fmt(res.fileTotal)}</b>${same ? ' ✓ совпадает' : ' — отличается от расчёта конструктора'}</div>` : '';
+  return `<div class="imp-ok">${sheetSel}
     <div><b>Распознано:</b> услуг ${res.stats.services}${res.stats.groups ? ', групп ' + res.stats.groups : ''}, этапов ${res.stats.stages}</div>
     <ul class="imp-list">${perStage}</ul>
     <div>Итого с управлением проектом: <b>${fmt(r.total)} ${esc(currency || '')}</b> · часы клиенту ${r.hoursClient} · исполнителю ${r.hoursExecutor}</div>
+    ${fileTot}
     ${warns ? `<ul class="imp-list imp-warn">${warns}</ul>` : ''}</div>`;
+}
+function wireSheetSelect(root, onPick) {
+  const el = root.querySelector('[data-imp-sheet]');
+  if (el) el.onchange = () => onPick(el.value);
 }
 // Импорт файла в существующую смету — новой (действующей) версией
 function openImportToEstimate(e) {
@@ -511,21 +525,27 @@ function openImportToEstimate(e) {
       <div id="ii_preview" style="margin-top:10px"></div></div>
     <div class="acts"><button class="btn ghost" id="ii_cancel">Отмена</button><button class="btn prim" id="ii_ok" disabled>Импортировать →</button></div></div>`;
   document.body.appendChild(m);
-  let parsed = null, fname = '';
+  let parsed = null, fname = '', b64 = '', seq = 0;
   $('#ii_cancel').onclick = () => m.remove();
   m.onclick = (ev) => { if (ev.target === m) m.remove(); };
   $('#ii_tpl').onclick = (ev) => { ev.preventDefault(); downloadImportTemplate(); };
+  async function parse(sheet) {
+    const my = ++seq;
+    parsed = null; $('#ii_ok').disabled = true;
+    $('#ii_preview').innerHTML = '<span class="sub">Разбор файла…</span>';
+    const res = await api('/import/parse', { method: 'POST', body: JSON.stringify({ fileName: fname, fileBase64: b64, estimateId: e.id, sheet }) }).catch(() => ({ error: 'network' }));
+    if (my !== seq) return;
+    if (!res || res.error) { $('#ii_preview').innerHTML = `<div class="imp-err">Не удалось прочитать файл: ${esc((res && res.message) || 'ошибка сети')}</div>`; return; }
+    parsed = res; $('#ii_preview').innerHTML = importPreviewHtml(res, e.currency); $('#ii_ok').disabled = false;
+    wireSheetSelect(m, (name) => parse(name));
+  }
   $('#ii_file').onchange = async () => {
     const f = $('#ii_file').files[0];
     parsed = null; $('#ii_ok').disabled = true; $('#ii_preview').innerHTML = '';
     if (!f) return;
     if (f.size > IMPORT_MAX) { $('#ii_preview').innerHTML = '<div class="imp-err">Файл больше 3,5 МБ</div>'; return; }
-    fname = f.name;
-    $('#ii_preview').innerHTML = '<span class="sub">Разбор файла…</span>';
-    const b64 = await fileToBase64(f);
-    const res = await api('/import/parse', { method: 'POST', body: JSON.stringify({ fileName: f.name, fileBase64: b64, estimateId: e.id }) }).catch(() => ({ error: 'network' }));
-    if (!res || res.error) { $('#ii_preview').innerHTML = `<div class="imp-err">Не удалось прочитать файл: ${esc((res && res.message) || 'ошибка сети')}</div>`; return; }
-    parsed = res; $('#ii_preview').innerHTML = importPreviewHtml(res, e.currency); $('#ii_ok').disabled = false;
+    fname = f.name; b64 = await fileToBase64(f);
+    parse(null);
   };
   $('#ii_ok').onclick = async () => {
     if (!parsed) return;

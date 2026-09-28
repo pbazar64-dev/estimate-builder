@@ -35,27 +35,33 @@ function colIndex(ref) {
   return n - 1;
 }
 
-function xlsxRows(buf) {
+// Все листы книги по порядку: [{ name, rows }]
+function xlsxSheets(buf) {
   const zip = readZip(buf);
   const get = (name) => { const b = zip.get(name); return b ? b.toString('utf8') : null; };
-  // первый лист книги (по порядку в workbook.xml)
-  let sheetPath = 'xl/worksheets/sheet1.xml';
-  const wb = get('xl/workbook.xml'), rels = get('xl/_rels/workbook.xml.rels');
-  if (wb && rels) {
-    const sm = /<sheet\b[^>]*\br:id="([^"]+)"/.exec(wb);
-    if (sm) {
-      const re = new RegExp('<Relationship\\b[^>]*\\bId="' + sm[1] + '"[^>]*>');
-      const rm = re.exec(rels);
-      const tm = rm && /\bTarget="([^"]+)"/.exec(rm[0]);
-      if (tm) sheetPath = tm[1].charAt(0) === '/' ? tm[1].slice(1) : 'xl/' + tm[1].replace(/^\.\//, '');
-    }
-  }
-  const sheet = get(sheetPath) || get('xl/worksheets/sheet1.xml');
-  if (!sheet) throw new Error('В файле не найден лист с данными');
   const sst = [];
   const ss = get('xl/sharedStrings.xml');
   if (ss) ss.replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (m, x) => { sst.push(richText(x)); return m; });
-
+  const wb = get('xl/workbook.xml') || '', rels = get('xl/_rels/workbook.xml.rels') || '';
+  const list = [];
+  wb.replace(/<sheet\b[^>]*>/g, (tag) => {
+    const nm = /\bname="([^"]*)"/.exec(tag), id = /\br:id="([^"]+)"/.exec(tag);
+    if (/\bstate="(hidden|veryHidden)"/.test(tag) || !id) return tag;
+    const rm = new RegExp('<Relationship\\b[^>]*\\bId="' + id[1] + '"[^>]*>').exec(rels);
+    const tm = rm && /\bTarget="([^"]+)"/.exec(rm[0]);
+    if (tm) list.push({ name: nm ? xmlDecode(nm[1]) : '', path: tm[1].charAt(0) === '/' ? tm[1].slice(1) : 'xl/' + tm[1].replace(/^\.\//, '') });
+    return tag;
+  });
+  if (!list.length) list.push({ name: '', path: 'xl/worksheets/sheet1.xml' });
+  const out = [];
+  for (const sh of list) {
+    const xml = get(sh.path);
+    if (xml) out.push({ name: sh.name, rows: sheetRows(xml, sst) });
+  }
+  if (!out.length) throw new Error('В файле не найден лист с данными');
+  return out;
+}
+function sheetRows(sheet, sst) {
   const rows = [];
   sheet.replace(/<row\b([^>]*)>([\s\S]*?)<\/row>/g, (m, rattr, inner) => {
     const rn = /\br="(\d+)"/.exec(rattr);
@@ -113,14 +119,15 @@ function csvRows(buf) {
   return rows;
 }
 
-function fileRows(buf, fileName) {
+// Листы файла: [{ name, rows }] (у CSV — один лист)
+function fileSheets(buf, fileName) {
   const name = String(fileName || '').toLowerCase();
   const isZip = buf.length > 4 && buf.readUInt32LE(0) === 0x04034b50;
-  if (isZip) return xlsxRows(buf);
+  if (isZip) return xlsxSheets(buf);
   if (/\.xls$/.test(name) || (buf[0] === 0xD0 && buf[1] === 0xCF)) {
     throw new Error('Формат .xls (Excel 97–2003) не поддерживается — сохраните файл как .xlsx');
   }
-  return csvRows(buf);
+  return [{ name: '', rows: csvRows(buf) }];
 }
 
 // ---------- Разбор сметы ----------
@@ -133,6 +140,12 @@ function num(v) {
   const n = Number(s); return isFinite(n) ? n : null;
 }
 const round2 = (x) => Math.round(x * 100) / 100;
+// «1», «1.2», «2.3.10» (текстом или числом-целым)
+function outlineNo(v) {
+  if (typeof v === 'number') return Number.isInteger(v) && v > 0 ? [String(v)] : null;
+  const t = norm(v).replace(/\.$/, '');
+  return /^\d+(\.\d+)*$/.test(t) ? t.split('.') : null;
+}
 
 // Этап по названию (заголовок строки или значение колонки «Этап»)
 const STAGE_ALIASES = [
@@ -199,131 +212,240 @@ function catalogMatch(name, catalog) {
   })()) || null;
 }
 
-const SKIP_RE = /^(итого|всего|итог)\b|^управление проектом/;
+// Валюта расчёта из шапки файла («Валюта расчета | Тенге») → код валюты
+const CURRENCY_LABELS = [
+  { re: /бел|byn/, code: 'BYN' }, { re: /рос|rub|₽/, code: 'RUB' }, { re: /тенге|kzt|₸/, code: 'KZT' },
+  { re: /злот|pln/, code: 'PLN' }, { re: /сум|uzs/, code: 'UZS' },
+];
+function sheetCurrency(rows, upTo) {
+  for (let r = 0; r < upTo; r++) {
+    const row = rows[r] || [];
+    const i = row.findIndex((c) => /валют/.test(low(c)));
+    if (i === -1) continue;
+    for (let j = i + 1; j < row.length; j++) {
+      const t = low(row[j]);
+      if (!t) continue;
+      const m = CURRENCY_LABELS.find((x) => x.re.test(t));
+      return { label: norm(row[j]), code: m ? m.code : null };
+    }
+  }
+  return null;
+}
 
-// buf — содержимое файла; opts: { rate, stages (store.stages), catalog }
-function parseEstimateFile(buf, fileName, opts) {
-  const rate = Number(opts.rate) || 0;
-  const stageDefs = opts.stages || [];
-  const catalog = opts.catalog || [];
-  const rows = fileRows(buf, fileName);
+const PM_RE = /^управление проектом/;
+const TOTAL_RE = /^(итого|всего|итог)(\s|$|:)/;
+
+// Разбор одного листа. Поддерживаются:
+//  • простая таблица (№ и Наименование в своих колонках);
+//  • «лесенка» из шаблона Ава Тетис: номер и название сдвигаются вправо с уровнем
+//    (этап — A/B, услуга — B/C, подпункт — C/D), весь каталог в листе, в смету входят
+//    только строки с Количеством > 0 (услуги-формулы без количества — если стоимость > 0).
+function parseSheet(rows, ctx) {
   const hdr = findHeader(rows);
-  if (!hdr) throw new Error('Не найдена строка заголовков: нужна колонка «Наименование» и хотя бы одна из «Кол-во», «Часы», «Стоимость», «Описание»');
+  if (!hdr) return null;
   const M = hdr.map;
-  const cell = (row, key) => (M[key] == null ? '' : row[M[key]]);
+  const at = (row, key) => (M[key] == null ? '' : row[M[key]]);
+  const dataCols = ['desc', 'qty', 'hExec', 'hClient', 'price', 'amount'].map((k) => M[k]).filter((c) => c != null && c > M.name);
+  const lo = M.no != null ? Math.min(M.no, M.name) : M.name;
+  const hi = dataCols.length ? Math.min(...dataCols) : M.name + 1;
 
+  // 1) строки → узлы
+  const nodes = [];
+  let curStage = null, fileTotal = null, pmSkipped = 0, unknownStage = false;
   const warnings = new Set();
-  const lines = [];
-  let curStage = null;
-  let lastTop = null; // { line, noParts }
-  let skippedPM = 0, unknownStageRows = 0;
-  const derivedIds = new Set(), execCopiedIds = new Set();
-
   for (let r = hdr.index + 1; r < rows.length; r++) {
     const row = rows[r] || [];
-    const name = norm(cell(row, 'name'));
-    const noRaw = norm(cell(row, 'no'));
+    let no = null, name = '';
+    for (let c = lo; c < hi; c++) {
+      if (c === M.stage) continue;
+      const v = row[c];
+      if (v === '' || v == null) continue;
+      const o = outlineNo(v);
+      if (o && !no && !name) { no = o; continue; }
+      if (!name && typeof v !== 'number') name = norm(v);
+    }
     if (!name) continue;
     const lname = low(name);
-    if (SKIP_RE.test(lname)) { if (/^управление проектом/.test(lname)) skippedPM++; continue; }
+    const v = {
+      qty: num(at(row, 'qty')), hExec: num(at(row, 'hExec')), hClient: num(at(row, 'hClient')),
+      price: num(at(row, 'price')), amount: num(at(row, 'amount')),
+    };
+    if (TOTAL_RE.test(lname)) { if (v.amount != null && fileTotal == null) fileTotal = v.amount; continue; }
+    if (PM_RE.test(lname)) { pmSkipped++; continue; }
 
-    const qtyV = num(cell(row, 'qty'));
-    const hExecV = num(cell(row, 'hExec'));
-    const hClientV = num(cell(row, 'hClient'));
-    const priceV = num(cell(row, 'price'));
-    const amountV = num(cell(row, 'amount'));
-    const noParts = noRaw.replace(/\.$/, '').split('.').filter(Boolean);
-    const noValid = noParts.length && noParts.every((p) => /^\d+$/.test(p));
-
-    // колонка «Этап» (если есть) — задаёт этап строки
-    if (M.stage != null && norm(cell(row, 'stage'))) {
-      const sc = stageByTitle(cell(row, 'stage'), stageDefs);
-      if (sc) { if (sc !== curStage) lastTop = null; curStage = sc; }
+    if (M.stage != null && norm(at(row, 'stage'))) {
+      const sc = stageByTitle(at(row, 'stage'), ctx.stages);
+      if (sc) curStage = sc;
     }
-
-    // строка-заголовок этапа: № из одной цифры (или без №) и название этапа, без кол-ва/часов
-    const noData = qtyV == null && hExecV == null && hClientV == null && priceV == null;
-    // без нумерации — только явное название этапа, чтобы не спутать с услугой «Настройка …»
-    const asStage = noData ? stageByTitle(name, stageDefs, !noValid && (amountV != null || !!norm(cell(row, 'desc')))) : null;
-    if (asStage && (!noValid || noParts.length === 1)) {
-      curStage = asStage; lastTop = null; continue;
+    const noData = v.qty == null && v.hExec == null && v.hClient == null && v.price == null;
+    const depth = no ? no.length : 0;
+    // заголовок этапа: «1 | Моделирование» (итоговые часы/стоимость в строке этапа допустимы);
+    // без номера — только явное название этапа и без количества/часов
+    if (depth === 1 || (depth === 0 && noData)) {
+      const sc = stageByTitle(name, ctx.stages, depth === 0 && (v.amount != null || !!norm(at(row, 'desc'))));
+      if (sc) { curStage = sc; continue; }
+      if (depth === 1 && noData && M.stage == null) {
+        curStage = 'setup';
+        nodes.push({ no, depth, name, desc: norm(at(row, 'desc')), v, stage: curStage, forcedGroup: true, children: [] });
+        warnings.add(`Раздел «${name}» не распознан как этап — добавлен группой в «${ctx.stageTitle('setup')}»`);
+        continue;
+      }
     }
-    if (noValid && noParts.length === 1 && noData && M.stage == null) {
-      // неизвестный этап — кладём в «Настройку штатного функционала» группой
-      curStage = 'setup';
-      const g = { id: nid('ln'), stage: curStage, level: 2, parentId: null, name, description: norm(cell(row, 'desc')), qty: 1, hoursExecutor: 0, hoursClient: 0, isGroup: true };
-      lines.push(g); lastTop = { line: g, noParts, explicitGroup: true };
-      warnings.add(`Раздел «${name}» не распознан как этап — добавлен группой в «Настройка штатного функционала»`);
+    if (!curStage) { curStage = 'setup'; unknownStage = true; }
+    nodes.push({ no, depth, name, desc: norm(at(row, 'desc')), v, stage: curStage, children: [] });
+  }
+
+  // 2) иерархия по нумерации: 2.3.4 — подпункт 2.3 того же этапа; подпункты раздела — в его группу
+  const byKey = new Map();
+  for (const n of nodes) {
+    let parent = null;
+    if (n.depth >= 3) parent = byKey.get(n.stage + ':' + n.no.slice(0, -1).join('.'));
+    else if (n.depth === 2) { const p = byKey.get(n.stage + ':' + n.no[0]); if (p && p.forcedGroup) parent = p; }
+    if (parent && !parent.parent) { n.parent = parent; parent.children.push(n); }
+    if (n.no) byKey.set(n.stage + ':' + n.no.join('.'), n);
+  }
+
+  // 3) какие строки входят в смету
+  let zeroSkipped = 0;
+  const leafIncluded = (n) => {
+    const v = n.v;
+    if (v.qty === 0) return false;
+    if (v.qty == null) {
+      const vals = [v.hExec, v.hClient, v.price, v.amount].filter((x) => x != null);
+      if (vals.length && vals.every((x) => x === 0)) return false;
+      if (M.amount != null && v.amount === 0) return false;
+    }
+    return true;
+  };
+  for (const n of nodes) {
+    if (n.children.length || n.forcedGroup) continue;
+    n.keep = leafIncluded(n);
+    if (!n.keep) zeroSkipped++;
+  }
+  for (const n of nodes) if (n.children.length || n.forcedGroup) n.keep = n.children.some((c) => c.keep);
+
+  // 4) узлы → строки конструктора
+  const rate = ctx.rate;
+  const lines = [], idOf = new Map();
+  let derived = 0, execCopied = 0;
+  const implied = [];
+  for (const n of nodes) {
+    if (!n.keep) continue;
+    const id = nid('ln');
+    idOf.set(n, id);
+    const parentId = n.parent ? idOf.get(n.parent) || null : null;
+    if (n.children.length || n.forcedGroup) {
+      lines.push({ id, stage: n.stage, level: 2, parentId: null, name: n.name, description: n.desc, qty: 1, hoursExecutor: 0, hoursClient: 0, isGroup: true });
       continue;
     }
-    if (!curStage) { curStage = 'setup'; unknownStageRows++; }
-
-    const qty = qtyV == null ? 1 : qtyV;
-    const lineId = nid('ln');
-    let hClient = hClientV, hExec = hExecV;
-    const cat = catalogMatch(name, catalog);
-    const hasOwnHours = hClient != null || hExec != null || priceV != null || amountV != null;
-
+    const v = n.v, qty = v.qty == null ? 1 : v.qty;
+    let hClient = v.hClient, hExec = v.hExec;
+    const hasOwn = [hClient, hExec, v.price, v.amount].some((x) => x != null);
     if (hClient == null) {
-      if (priceV != null && rate) { hClient = round2(priceV / rate); derivedIds.add(lineId); }
-      else if (amountV != null && rate && qty) { hClient = round2(amountV / rate / qty); derivedIds.add(lineId); }
+      if (v.price != null && rate) { hClient = round2(v.price / rate); derived++; }
+      else if (v.amount != null && rate && qty) { hClient = round2(v.amount / rate / qty); derived++; }
     }
-    if (hExec == null && hClient != null) { hExec = hClient; execCopiedIds.add(lineId); }
+    if (hExec == null && hClient != null) { hExec = hClient; execCopied++; }
     if (hClient == null && hExec != null) hClient = hExec;
-
+    if (v.amount > 0 && v.hClient > 0 && qty > 0) implied.push(v.amount / (qty * v.hClient));
+    const cat = catalogMatch(n.name, ctx.catalog);
     const line = {
-      id: lineId, stage: curStage, level: 2, parentId: null,
-      name, description: norm(cell(row, 'desc')) || (cat && cat.description) || '',
+      id, stage: n.stage, level: parentId ? 3 : 2, parentId, name: n.name,
+      description: n.desc || (cat && cat.description) || '',
       qty, hoursExecutor: hExec == null ? 0 : hExec, hoursClient: hClient == null ? 0 : hClient, isGroup: false,
     };
     if (cat && cat.formula) {
       line.formula = JSON.parse(JSON.stringify(cat.formula));
       // часы из файла сохраняем как ручные (в конструкторе можно вернуть авто-расчёт 🔄)
-      if (hasOwnHours) line.manualHours = true;
+      if (hasOwn) line.manualHours = true;
       else { line.hoursExecutor = 0; line.hoursClient = 0; }
-    } else if (cat && !hasOwnHours) {
+    } else if (cat && !hasOwn) {
       line.hoursExecutor = cat.hoursExecutor || 0; line.hoursClient = cat.hoursClient || 0;
     }
-
-    // иерархия по нумерации: 1.2.3 — подпункт группы 1.2 того же этапа
-    if (noValid && noParts.length >= 3 && lastTop && lastTop.line.stage === curStage
-      && lastTop.noParts.length === noParts.length - 1
-      && lastTop.noParts.every((p, i) => p === noParts[i])) {
-      const parent = lastTop.line;
-      if (!parent.isGroup) {
-        parent.isGroup = true; parent.hoursExecutor = 0; parent.hoursClient = 0; parent.qty = 1;
-        delete parent.formula; delete parent.manualHours;
-      }
-      line.level = 3; line.parentId = parent.id;
-      lines.push(line);
-      continue;
-    }
     lines.push(line);
-    lastTop = { line, noParts: noValid ? noParts : [] };
   }
+  const services = lines.filter((l) => !l.isGroup).length;
+  if (!services) return { services: 0 };
 
-  // группа без подпунктов (заголовок-группа) — оставляем группой
-  if (!lines.some((l) => !l.isGroup)) throw new Error('В файле не найдено ни одной услуги');
-
-  if (skippedPM) warnings.add('Строки «Управление проектом на этапе» пропущены — они считаются автоматически (15%)');
-  // считаем только услуги (строки, ставшие группами, не в счёт)
-  const services = new Set(lines.filter((l) => !l.isGroup && !(l.formula && !l.manualHours)).map((l) => l.id));
-  const derived = [...derivedIds].filter((id) => services.has(id)).length;
-  const execCopied = [...execCopiedIds].filter((id) => services.has(id)).length;
+  if (pmSkipped) warnings.add('Строки «Управление проектом на этапе» пропущены — они считаются автоматически (15%)');
+  if (zeroSkipped && nodes.length > 20) warnings.add(`Не вошли ${zeroSkipped} строк шаблона с количеством 0 (не выбраны)`);
   if (derived) warnings.add(`Часы клиента для ${derived} строк рассчитаны из стоимости по ставке ${rate}/ч`);
   if (execCopied) warnings.add(`Часы исполнителя не указаны для ${execCopied} строк — приняты равными часам клиента`);
-  if (unknownStageRows) warnings.add('Для строк без этапа выбран этап «Настройка штатного функционала»');
-
+  if (unknownStage) warnings.add(`Для строк без этапа выбран этап «${ctx.stageTitle('setup')}»`);
+  implied.sort((a, b) => a - b);
+  const impliedRate = implied.length ? Math.round(implied[Math.floor(implied.length / 2)]) : null;
   const used = new Set(lines.map((l) => l.stage));
-  const stages = stageDefs.map((s) => ({ code: s.code, on: used.has(s.code), order: s.order }));
   return {
-    draft: { stages, lines },
+    draft: { stages: ctx.stages.map((s) => ({ code: s.code, on: used.has(s.code), order: s.order })), lines },
     warnings: [...warnings],
-    stats: {
-      services: lines.filter((l) => !l.isGroup).length,
-      groups: lines.filter((l) => l.isGroup).length,
-      stages: used.size,
-    },
+    stats: { services, groups: lines.length - services, stages: used.size },
+    services, fileTotal, impliedRate,
+    hasHours: M.hClient != null || M.hExec != null,
+    currency: sheetCurrency(rows, hdr.index),
+  };
+}
+
+// Страна сметы по файлу: валюта из шапки, иначе — по ставке (стоимость / часы)
+function detectCountry(res, countries) {
+  if (!countries || !countries.length) return null;
+  if (res.currency && res.currency.code) {
+    const byCur = countries.filter((c) => c.currency === res.currency.code);
+    if (byCur.length === 1) return byCur[0].id;
+    const exact = byCur.find((c) => res.impliedRate && c.rate === res.impliedRate);
+    if (exact) return exact.id;
+    if (byCur.length) return byCur[0].id;
+  }
+  if (res.impliedRate) {
+    const byRate = countries.filter((c) => c.rate === res.impliedRate);
+    if (byRate.length === 1) return byRate[0].id;
+  }
+  return null;
+}
+
+// buf — содержимое файла; opts: { rate, stages (store.stages), catalog, countries, sheet }
+// rate может быть функцией (countryId|null) → ставка, чтобы учесть страну, найденную в файле.
+function parseEstimateFile(buf, fileName, opts) {
+  const stageDefs = opts.stages || [];
+  const ctx = {
+    stages: stageDefs, catalog: opts.catalog || [],
+    stageTitle: (code) => (stageDefs.find((s) => s.code === code) || {}).title || code,
+  };
+  const sheets = fileSheets(buf, fileName);
+  const parseAt = (rows, rate) => parseSheet(rows, Object.assign({}, ctx, { rate }));
+  const baseRate = typeof opts.rate === 'function' ? opts.rate(null) : Number(opts.rate) || 0;
+
+  const found = [];
+  for (const sh of sheets) {
+    let r = null;
+    try { r = parseAt(sh.rows, baseRate); } catch (e) { r = null; }
+    if (r && r.services) found.push({ sheet: sh, res: r });
+  }
+  if (!found.length) {
+    throw new Error('В файле не найдено услуг. Нужна строка заголовков с колонкой «Наименование» (или «Этап/Задача») и колонками «Кол-во», «Часы» или «Стоимость»; в смету попадают строки с количеством больше 0');
+  }
+  // лист: выбранный пользователем, иначе — с часами, наибольшим числом услуг и суммой
+  let pick = opts.sheet != null ? found.find((f) => f.sheet.name === opts.sheet) : null;
+  if (!pick) {
+    pick = found.slice().sort((a, b) =>
+      (b.res.hasHours - a.res.hasHours) || (b.res.services - a.res.services) || ((b.res.fileTotal || 0) - (a.res.fileTotal || 0)))[0];
+  }
+  let res = pick.res;
+  const countryId = detectCountry(res, opts.countries);
+  let rate = baseRate;
+  if (typeof opts.rate === 'function') {
+    rate = Number(opts.rate(countryId)) || baseRate;
+    if (rate !== baseRate) res = parseAt(pick.sheet.rows, rate);
+  }
+  const warnings = res.warnings.slice();
+  if (res.impliedRate && rate && Math.abs(res.impliedRate - rate) / rate > 0.01) {
+    warnings.unshift(`Ставка в файле ≈ ${res.impliedRate}/ч, в конструкторе — ${rate}/ч: стоимость пересчитана по ставке конструктора`);
+  }
+  if (found.length > 1) warnings.unshift(`Взят лист «${pick.sheet.name}» — другой лист можно выбрать в списке`);
+  return {
+    draft: res.draft, warnings, stats: res.stats,
+    sheet: pick.sheet.name,
+    sheets: found.map((f) => ({ name: f.sheet.name, services: f.res.services, fileTotal: f.res.fileTotal })),
+    fileTotal: res.fileTotal, currency: res.currency, detectedCountryId: countryId,
   };
 }
 
@@ -355,4 +477,4 @@ function sanitizeDraft(d, stageDefs) {
   return { stages, lines };
 }
 
-module.exports = { parseEstimateFile, sanitizeDraft };
+module.exports = { parseEstimateFile, sanitizeDraft, xlsxSheets };
