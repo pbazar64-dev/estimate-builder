@@ -217,3 +217,8 @@ tr.filtrow th{padding:6px 8px;border-bottom:1px solid var(--line);background:#FC
   .info{border-right:0;border-bottom:1px solid var(--line)}
   .nav{display:none}
 }
+/* импорт сметы из файла */
+.imp-ok{border:1px solid var(--line);background:var(--field);padding:10px 12px;font-size:13px;line-height:1.5}
+.imp-err{border:1px solid #c0392b;color:#c0392b;padding:10px 12px;font-size:13px}
+.imp-list{margin:6px 0 6px 18px;padding:0}
+.imp-warn{color:var(--ink-2);font-size:12px}

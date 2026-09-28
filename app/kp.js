@@ -399,4 +399,4 @@ function buildContract(e, snap, stages, form, templatesDir) {
   return writeZip(entries);
 }
 
-module.exports = { buildKP, buildContract, TEMPLATE_BY_COUNTRY, CONTRACT_BY_COUNTRY };
+module.exports = { buildKP, buildContract, readZip, TEMPLATE_BY_COUNTRY, CONTRACT_BY_COUNTRY };

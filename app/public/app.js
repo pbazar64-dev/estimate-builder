@@ -225,7 +225,8 @@ async function viewRegistry() {
   const app = $('#app');
   app.innerHTML = `<div class="phead"><div><span class="eyebrow">Реестр</span><h1>Все сметы компании</h1>
     <p class="dek">Поиск по названию и компании; фильтры и выбор колонок — по шестерёнке. Нажмите на смету, чтобы открыть карточку.</p></div>
-    <button class="btn prim" id="newBtn">+ Новая смета</button></div>
+    <div style="display:flex;gap:8px"><button class="btn ghost" id="importBtn" title="Создать смету из файла .xlsx / .csv">⬆ Импорт из файла</button>
+    <button class="btn prim" id="newBtn">+ Новая смета</button></div></div>
     <div class="stats" id="stats"></div>
     <div class="toolbar">
       <span class="search"><span>⌕</span><input id="q" placeholder="Поиск по названию и компании…"></span>
@@ -236,7 +237,8 @@ async function viewRegistry() {
       <span class="sub" id="filtBadge"></span>
     </div>
     <div class="panel tblwrap"><table><thead id="thead"></thead><tbody id="rows"></tbody></table></div>`;
-  $('#newBtn').onclick = openWizard;
+  $('#newBtn').onclick = () => openWizard();
+  $('#importBtn').onclick = () => openWizard({ importFile: true });
   $('#q').oninput = () => render();
   $('#gearBtn').onclick = (ev) => { ev.stopPropagation(); regState.panel = !regState.panel; renderPanel(); };
   document.addEventListener('click', closePanelOutside);
@@ -341,7 +343,10 @@ async function viewRegistry() {
 }
 
 /* ---------- Мастер создания ---------- */
-async function openWizard() {
+async function openWizard(opts) {
+  opts = opts || {};
+  const imp = !!opts.importFile;
+  const fileState = { name: '', b64: '', parsed: null, seq: 0 };
   let sel = App.boot.countries[0].id;
   let companies = { source: 'demo', items: [] };
   try { companies = await api('/crm/companies'); } catch (e) {}
@@ -355,7 +360,12 @@ async function openWizard() {
   const srcNote = companies.source === 'portal'
     ? '<span class="tag t-ok" style="margin-left:8px">портал Битрикс24</span>'
     : '<span class="tag t-warn" style="margin-left:8px">демо-данные</span>';
-  m.innerHTML = `<div class="box"><h3>Новая смета</h3>
+  const fileField = imp ? `<div class="field"><label>Файл сметы (.xlsx или .csv)</label>
+      <input type="file" id="w_file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
+      <div class="sub" style="margin-top:5px">${IMPORT_HINT} <a href="#" class="link" id="w_tpl">Скачать шаблон</a></div>
+      <div id="w_preview" style="margin-top:10px"></div></div>` : '';
+  m.innerHTML = `<div class="box"><h3>${imp ? 'Импорт сметы из файла' : 'Новая смета'}</h3>
+    ${fileField}
     <div class="field"><label>Название сметы</label><input id="w_title" placeholder="Например: Внедрение Б24 / Настройка HR-блока / Создание дашборда"><div class="sub" style="margin-top:5px">Итоговое название: «Компания — название сметы».</div></div>
     <div class="field" style="position:relative"><label>Компания <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(обязательно)</span> ${srcNote}</label>
       <input id="w_company" autocomplete="off" placeholder="Начните вводить название компании…">
@@ -370,8 +380,33 @@ async function openWizard() {
     <div class="field"><label>Страна расчёта · ставка часа</label><div class="countries" id="w_cnts">${cnts()}</div></div>
     <div class="acts"><button class="btn ghost" id="w_cancel">Отмена</button><button class="btn prim" id="w_ok">Создать →</button></div></div>`;
   document.body.appendChild(m);
-  const rebind = () => m.querySelectorAll('.cnt').forEach(el => el.onclick = () => { sel = el.dataset.id; $('#w_cnts').innerHTML = cnts(); rebind(); });
+  // импорт: разбор файла на сервере (ставка страны нужна, чтобы восстановить часы из стоимости)
+  async function parseFile() {
+    if (!imp || !fileState.b64) return;
+    const seq = ++fileState.seq;
+    fileState.parsed = null;
+    $('#w_preview').innerHTML = '<span class="sub">Разбор файла…</span>';
+    const res = await api('/import/parse', { method: 'POST', body: JSON.stringify({ fileName: fileState.name, fileBase64: fileState.b64, countryId: sel }) }).catch(() => ({ error: 'network' }));
+    if (seq !== fileState.seq) return;
+    if (!res || res.error) { $('#w_preview').innerHTML = `<div class="imp-err">Не удалось прочитать файл: ${esc((res && res.message) || 'ошибка сети')}</div>`; return; }
+    fileState.parsed = res;
+    const c = App.boot.countries.find(x => x.id === sel) || {};
+    $('#w_preview').innerHTML = importPreviewHtml(res, c.currency);
+  }
+  const rebind = () => m.querySelectorAll('.cnt').forEach(el => el.onclick = () => { sel = el.dataset.id; $('#w_cnts').innerHTML = cnts(); rebind(); parseFile(); });
   rebind();
+  if (imp) {
+    $('#w_tpl').onclick = (ev) => { ev.preventDefault(); downloadImportTemplate(); };
+    $('#w_file').onchange = async () => {
+      const f = $('#w_file').files[0];
+      fileState.name = ''; fileState.b64 = ''; fileState.parsed = null; $('#w_preview').innerHTML = '';
+      if (!f) return;
+      if (f.size > IMPORT_MAX) { $('#w_preview').innerHTML = '<div class="imp-err">Файл больше 3,5 МБ</div>'; return; }
+      fileState.name = f.name; fileState.b64 = await fileToBase64(f);
+      if (!$('#w_title').value.trim()) $('#w_title').value = f.name.replace(/\.[^.]+$/, '');
+      parseFile();
+    };
+  }
 
   const cInput = $('#w_company'), cList = $('#w_company_list'), dealSel = $('#w_deal');
   const absentBox = $('#w_company_absent'), customWrap = $('#w_company_custom_wrap'), customInput = $('#w_company_custom');
@@ -428,12 +463,98 @@ async function openWizard() {
       (absentBox.checked ? customInput : cInput).focus();
       return;
     }
+    if (imp && !fileState.parsed) { toast(fileState.b64 ? 'Файл не распознан — проверьте формат' : 'Выберите файл сметы'); return; }
     const name = $('#w_title').value.trim() || state.dealTitle || 'Новая смета';
     const title = companyTitle ? (companyTitle + ' — ' + name) : name;
     const body = { title, companyId: state.companyId, company: companyTitle, dealId: state.dealId, dealTitle: state.dealTitle, countryId: sel, author: author() };
-    const e = await api('/estimates', { method: 'POST', body: JSON.stringify(body) });
-    m.remove(); toast('Смета создана'); location.hash = '#/edit/' + e.id;
+    if (imp) { body.draft = fileState.parsed.draft; body.fileName = fileState.name; }
+    const okBtn = $('#w_ok'); okBtn.disabled = true;
+    const e = await api('/estimates', { method: 'POST', body: JSON.stringify(body) }).catch(() => ({ error: 'network' }));
+    if (!e || e.error) { okBtn.disabled = false; toast('Ошибка: ' + ((e && e.message) || 'не удалось создать смету')); return; }
+    m.remove();
+    toast(imp ? 'Смета импортирована — версия v1' : 'Смета создана');
+    location.hash = '#/edit/' + e.id;
   };
+}
+
+/* ---------- Импорт сметы из файла (.xlsx / .csv) ---------- */
+const IMPORT_MAX = 3.5 * 1024 * 1024;
+const IMPORT_HINT = 'Колонки: №, Наименование, Описание, Кол-во, Часы исполнителя, Часы клиента (или Стоимость). Этапы — строками-заголовками. Подходит и выгрузка Excel из конструктора.';
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+}
+function importPreviewHtml(res, currency) {
+  const r = res.computed || {};
+  const lines = res.draft.lines;
+  const perStage = res.draft.stages.filter(s => s.on).sort((a, b) => a.order - b.order)
+    .map(s => `<li>${esc(stageTitle(s.code))}: <b>${lines.filter(l => l.stage === s.code && !l.isGroup).length}</b> усл. · ${fmt((r.stageTotals || {})[s.code])} ${esc(currency || '')}</li>`).join('');
+  const warns = (res.warnings || []).map(w => `<li>${esc(w)}</li>`).join('');
+  return `<div class="imp-ok">
+    <div><b>Распознано:</b> услуг ${res.stats.services}${res.stats.groups ? ', групп ' + res.stats.groups : ''}, этапов ${res.stats.stages}</div>
+    <ul class="imp-list">${perStage}</ul>
+    <div>Итого с управлением проектом: <b>${fmt(r.total)} ${esc(currency || '')}</b> · часы клиенту ${r.hoursClient} · исполнителю ${r.hoursExecutor}</div>
+    ${warns ? `<ul class="imp-list imp-warn">${warns}</ul>` : ''}</div>`;
+}
+// Импорт файла в существующую смету — новой (действующей) версией
+function openImportToEstimate(e) {
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div class="box"><h3>Импорт из файла</h3>
+    <div class="sub" style="margin-bottom:12px">Смета из файла будет сохранена как новая действующая версия. Ставка — ${fmt(e.rate)} ${esc(e.currency)}/ч (из этой сметы).</div>
+    <div class="field"><label>Файл сметы (.xlsx или .csv)</label>
+      <input type="file" id="ii_file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
+      <div class="sub" style="margin-top:5px">${IMPORT_HINT} <a href="#" class="link" id="ii_tpl">Скачать шаблон</a></div>
+      <div id="ii_preview" style="margin-top:10px"></div></div>
+    <div class="acts"><button class="btn ghost" id="ii_cancel">Отмена</button><button class="btn prim" id="ii_ok" disabled>Импортировать →</button></div></div>`;
+  document.body.appendChild(m);
+  let parsed = null, fname = '';
+  $('#ii_cancel').onclick = () => m.remove();
+  m.onclick = (ev) => { if (ev.target === m) m.remove(); };
+  $('#ii_tpl').onclick = (ev) => { ev.preventDefault(); downloadImportTemplate(); };
+  $('#ii_file').onchange = async () => {
+    const f = $('#ii_file').files[0];
+    parsed = null; $('#ii_ok').disabled = true; $('#ii_preview').innerHTML = '';
+    if (!f) return;
+    if (f.size > IMPORT_MAX) { $('#ii_preview').innerHTML = '<div class="imp-err">Файл больше 3,5 МБ</div>'; return; }
+    fname = f.name;
+    $('#ii_preview').innerHTML = '<span class="sub">Разбор файла…</span>';
+    const b64 = await fileToBase64(f);
+    const res = await api('/import/parse', { method: 'POST', body: JSON.stringify({ fileName: f.name, fileBase64: b64, estimateId: e.id }) }).catch(() => ({ error: 'network' }));
+    if (!res || res.error) { $('#ii_preview').innerHTML = `<div class="imp-err">Не удалось прочитать файл: ${esc((res && res.message) || 'ошибка сети')}</div>`; return; }
+    parsed = res; $('#ii_preview').innerHTML = importPreviewHtml(res, e.currency); $('#ii_ok').disabled = false;
+  };
+  $('#ii_ok').onclick = async () => {
+    if (!parsed) return;
+    $('#ii_ok').disabled = true;
+    const v = await api('/estimates/' + e.id + '/import-draft', { method: 'POST', body: JSON.stringify({ draft: parsed.draft, fileName: fname, author: author() }) }).catch(() => ({ error: 'network' }));
+    if (!v || v.error) { $('#ii_ok').disabled = false; toast('Ошибка импорта: ' + ((v && v.message) || v.error)); return; }
+    m.remove(); toast('Импортировано как версия v' + v.number); viewCard(e.id);
+  };
+}
+// Шаблон для импорта: те же колонки, что понимает разбор, с примером заполнения
+function downloadImportTemplate() {
+  const S = (v, s) => ({ v, t: 's', s }), N = (v, s) => ({ v, t: 'n', s }), B = (s) => ({ v: '', s });
+  const out = [[S('№', 4), S('Наименование', 3), S('Описание', 3), S('Кол-во', 3), S('Часы исполнителя', 3), S('Часы клиента', 3)]];
+  const stage = (no, name) => out.push([S(no, 4), S(name, 5), B(5), B(2), B(2), B(2)]);
+  const row = (no, name, desc, q, he, hc) => out.push([S(no, 1), S(name, 0), S(desc, 0), q == null ? B(2) : N(q, 2), he == null ? B(2) : N(he, 2), hc == null ? B(2) : N(hc, 2)]);
+  stage('1', stageTitle('modeling'));
+  row('1.1', 'Написание ТЗ (технического задания)', 'Часы считаются автоматически — оставьте пустыми', null, null, null);
+  stage('2', stageTitle('setup'));
+  row('2.1', 'CRM', 'Группа: подпункты 2.1.1, 2.1.2…', null, null, null);
+  row('2.1.1', 'Настройка воронки сделок', '1 воронка, до 10 полей', 1, 1, 2);
+  row('2.1.2', 'Настройка роботов/триггеров', 'пакет до 10 роботов', 1, 2, 2);
+  row('2.2', 'Интеграция с телефонией', '', 1, 6, 8);
+  stage('3', stageTitle('trial'));
+  row('3.1', 'Тестирование и корректировки настроек', '', null, null, null);
+  row('3.2', 'Обучение пользователей', 'онлайн, 2 часа', 2, 2, 2);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(_xlsx(out, { widths: [7, 42, 42, 9, 12, 12] }));
+  a.download = 'Шаблон импорта сметы.xlsx'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
 /* ---------- Карточка сметы ---------- */
@@ -496,7 +617,8 @@ async function viewCard(id) {
     ${paymentSectionHtml(e, activeSnap)}
     <div class="phead" style="margin-top:34px"><div><span class="eyebrow">Версии</span>
       <p class="dek" style="margin-top:4px">Действующая версия обведена зелёным кружком. Правый клик по номеру версии — сделать её действующей (может быть только одна). «Правка» — открыть версию в конструкторе; изменения сохранятся как новая версия. «＋ Новая версия» — начать версию с чистого листа (без услуг), компания/сделка/страна/название берутся из этой сметы.</p></div>
-      <button class="btn" id="newVerBtn" style="align-self:flex-start;white-space:nowrap">＋ Новая версия</button></div>
+      <div style="display:flex;gap:8px;align-self:flex-start"><button class="btn ghost" id="importVerBtn" style="white-space:nowrap" title="Загрузить смету из .xlsx / .csv новой версией">⬆ Импорт из файла</button>
+      <button class="btn" id="newVerBtn" style="white-space:nowrap">＋ Новая версия</button></div></div>
     <div class="panel" style="padding:8px 24px">${verRows}</div>`;
 
   wirePaymentSection(e, () => activeSnap);
@@ -518,6 +640,7 @@ async function viewCard(id) {
   // новая версия «с нуля»: чистый набор без услуг (как новая смета из реестра),
   // компания/сделка/страна/название берутся из этой сметы. Открываем конструктор —
   // после наполнения и сохранения появится новая версия.
+  $('#importVerBtn').onclick = () => openImportToEstimate(e);
   const nvb = $('#newVerBtn');
   if (nvb) nvb.onclick = async () => {
     if (!confirm('Создать новую версию с чистого листа? Услуги не переносятся, текущий несохранённый черновик будет очищен.')) return;

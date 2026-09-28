@@ -9,6 +9,7 @@ const path = require('path');
 const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS } = require('./seed');
 const { recalc } = require('./calc');
 const { buildKP, buildContract } = require('./kp');
+const { parseEstimateFile, sanitizeDraft } = require('./importer');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
@@ -316,6 +317,25 @@ function estimateSummary(e) {
   };
 }
 
+// Новая версия-слепок из черновика (становится действующей).
+function addVersionFromDraft(e, comment, who) {
+  const r = recalc(e.draft, e.rate);
+  const number = (e.versions || []).reduce((m, v) => Math.max(m, v.number), 0) + 1;
+  const v = {
+    number, author: who, comment: comment || '', basedOn: null,
+    currency: e.currency, rate: e.rate, totalAmount: r.total, durationDays: r.durationDays,
+    createdAt: new Date().toISOString(),
+    snapshot: JSON.parse(JSON.stringify(e.draft)),
+  };
+  e.versions = e.versions || [];
+  e.versions.push(v);
+  e.activeVersion = number;
+  e.editingFrom = null;
+  e.updatedAt = v.createdAt;
+  e.updatedBy = who;
+  return v;
+}
+
 // ---------- Роутинг API ----------
 async function api(req, res, parts, query) {
   const method = req.method;
@@ -413,6 +433,23 @@ async function api(req, res, parts, query) {
     }
   }
 
+  // POST /api/import/parse { fileName, fileBase64, countryId | estimateId } — разбор файла сметы
+  // (предпросмотр; в хранилище ничего не пишет). Ставка нужна, чтобы восстановить часы из стоимости.
+  if (method === 'POST' && parts[1] === 'import' && parts[2] === 'parse') {
+    const b = await readBody(req);
+    if (!b.fileBase64) return sendJSON(res, 400, { error: 'file_required', message: 'Файл не передан (или больше 3,5 МБ)' });
+    const est = b.estimateId ? findEstimate(b.estimateId) : null;
+    const c = est ? null : (country(b.countryId) || store.countries[0]);
+    const rate = est ? est.rate : c.rate;
+    try {
+      const buf = Buffer.from(String(b.fileBase64), 'base64');
+      const out = parseEstimateFile(buf, b.fileName, { rate, stages: store.stages, catalog: store.catalog });
+      return sendJSON(res, 200, { ...out, rate, computed: recalc(out.draft, rate) });
+    } catch (err) {
+      return sendJSON(res, 400, { error: 'parse_failed', message: String(err && err.message) });
+    }
+  }
+
   // /api/catalog
   if (method === 'GET' && parts[1] === 'catalog') return sendJSON(res, 200, store.catalog);
 
@@ -468,6 +505,14 @@ async function api(req, res, parts, query) {
         createdAt: now, updatedAt: now, createdBy: who, createdById: whoId, updatedBy: who,
         draft: { stages: defaultStages(), lines: [] }, versions: [],
       };
+      // импорт из файла: разобранный черновик сразу сохраняется версией v1 (можно запускать проект)
+      if (b.draft) {
+        const d = sanitizeDraft(b.draft, store.stages);
+        if (!d) return sendJSON(res, 400, { error: 'invalid_draft', message: 'Смета из файла пуста или повреждена' });
+        e.draft = d;
+        e.importedFrom = b.fileName ? String(b.fileName) : null;
+        addVersionFromDraft(e, b.versionComment || ('Импорт из файла' + (b.fileName ? ' «' + b.fileName + '»' : '')), who);
+      }
       store.estimates.unshift(e); persist();
       return sendJSON(res, 201, estimateSummary(e));
     }
@@ -535,6 +580,18 @@ async function api(req, res, parts, query) {
       { const a = reqAuthor(req, b); if (a) e.updatedBy = a.name; }
       persist();
       return sendJSON(res, 200, { ok: true, computed: recalc(e.draft, e.rate) });
+    }
+    // POST /api/estimates/:id/import-draft { draft, fileName } — импорт файла в смету новой версией
+    if (method === 'POST' && sub === 'import-draft') {
+      const b = await readBody(req);
+      const d = sanitizeDraft(b.draft, store.stages);
+      if (!d) return sendJSON(res, 400, { error: 'invalid_draft', message: 'Смета из файла пуста или повреждена' });
+      const a = reqAuthor(req, b);
+      const who = a ? a.name : (e.updatedBy || e.responsible || 'Пользователь Битрикс24');
+      e.draft = d;
+      const v = addVersionFromDraft(e, 'Импорт из файла' + (b.fileName ? ' «' + b.fileName + '»' : ''), who);
+      persist();
+      return sendJSON(res, 201, v);
     }
     // POST /api/estimates/:id/blank-draft — начать новую версию с чистого листа
     // (стандартный набор этапов, без услуг). Компания/сделка/страна/название — из сметы.
