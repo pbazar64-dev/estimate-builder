@@ -767,7 +767,9 @@ function estimateServices(e) {
     }
     lines.forEach((l) => {
       const h = (r.lineHours && r.lineHours[l.id]) || { exec: Number(l.hoursExecutor) || 0 };
-      out.push({ name: l.name, description: l.description || '', hoursExecutor: h.exec });
+      // часы в строке — на единицу; плановые трудозатраты задачи = часы × количество (как в recalc)
+      const qty = l.qty == null ? 1 : Number(l.qty) || 0;
+      out.push({ name: l.name, description: l.description || '', hoursExecutor: h.exec * qty });
     });
   });
   return { services: out, computed: r };
