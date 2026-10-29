@@ -252,7 +252,8 @@ function migrateCatalogExecHours() {
 try { migrateCatalogExecHours(); } catch (e) { console.error('migrateCatalogExecHours failed:', e && e.message); }
 
 // Разовая миграция каталога: часы исполнителя округляем до целого по математике
-// (дробная часть < 0,5 — вниз, ≥ 0,5 — вверх: 3,45 → 3, 3,5 → 4). Идёт после ×0,66.
+// (дробная часть < 0,5 — вниз, ≥ 0,5 — вверх: 3,45 → 3, 3,5 → 4), но не меньше 0,5 ч
+// для ненулевых часов (0,33 → 0,5). Идёт после ×0,66.
 function migrateCatalogExecHoursRound() {
   const KEY = 'catalogExecHours_round';
   store.migrations = Array.isArray(store.migrations) ? store.migrations : [];
@@ -260,7 +261,8 @@ function migrateCatalogExecHoursRound() {
   let n = 0;
   for (const c of (store.catalog || [])) {
     const h = Number(c.hoursExecutor) || 0;
-    const r = Math.round(h);
+    let r = Math.round(h);
+    if (h > 0 && r < 0.5) r = 0.5; // ненулевые часы не обнуляем: минимум 0,5 ч
     if (r !== h) { c.hoursExecutor = r; n++; }
   }
   store.migrations.push(KEY);
