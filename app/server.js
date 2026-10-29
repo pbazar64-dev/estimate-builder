@@ -231,6 +231,26 @@ function migrateFormulaBases() {
 }
 try { migrateFormulaBases(); } catch (e) { console.error('migrateFormulaBases failed:', e && e.message); }
 
+// Разовая миграция каталога: часы исполнителя всех услуг × 0,66 (округление до 0,01 ч).
+// Применяется один раз — отметка в store.migrations, повторный старт ничего не меняет.
+// Сметы (draft и версии) не трогаем: в них часы уже зафиксированы.
+function migrateCatalogExecHours() {
+  const KEY = 'catalogExecHours_x0.66';
+  store.migrations = Array.isArray(store.migrations) ? store.migrations : [];
+  if (store.migrations.includes(KEY)) return;
+  let n = 0;
+  for (const c of (store.catalog || [])) {
+    const h = Number(c.hoursExecutor) || 0;
+    if (!h) continue;
+    c.hoursExecutor = Math.round(h * 0.66 * 100) / 100;
+    n++;
+  }
+  store.migrations.push(KEY);
+  persist();
+  console.log('migrateCatalogExecHours: executor hours x0.66 for', n, 'catalog items');
+}
+try { migrateCatalogExecHours(); } catch (e) { console.error('migrateCatalogExecHours failed:', e && e.message); }
+
 const findEstimate = (id) => store.estimates.find((e) => e.id === id);
 const country = (id) => store.countries.find((c) => c.id === id);
 
