@@ -150,6 +150,7 @@ function outlineNo(v) {
 
 // Этап по названию (заголовок строки или значение колонки «Этап»)
 const STAGE_ALIASES = [
+  { code: 'box', re: /коробочн|разворот|bitrixvm/ },
   { code: 'preresearch', re: /предпроект|обследован|исследован|аудит/ },
   { code: 'modeling', re: /моделир|проектир/ },
   { code: 'development', re: /разработк/ },

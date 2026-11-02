@@ -11,10 +11,11 @@ const COUNTRIES = [
 
 const STAGES = [
   { code: 'preresearch', title: 'Предпроектное исследование', defaultOn: false, order: 1 },
-  { code: 'modeling', title: 'Моделирование', defaultOn: true, order: 2 },
-  { code: 'setup', title: 'Настройка штатного функционала', defaultOn: true, order: 3 },
-  { code: 'development', title: 'Разработка', defaultOn: false, order: 4 },
-  { code: 'trial', title: 'Введение в ОПЭ', defaultOn: true, order: 5 },
+  { code: 'box', title: 'Разворот/обновления коробочного портала', defaultOn: false, order: 2 },
+  { code: 'modeling', title: 'Моделирование', defaultOn: true, order: 3 },
+  { code: 'setup', title: 'Настройка штатного функционала', defaultOn: true, order: 4 },
+  { code: 'development', title: 'Разработка', defaultOn: false, order: 5 },
+  { code: 'trial', title: 'Введение в ОПЭ', defaultOn: true, order: 6 },
 ];
 
 const CATALOG = [
@@ -668,6 +669,22 @@ function konakovoLines() {
   ];
 }
 
+// Блок «Разворот/обновления коробочного портала». Не входит в CATALOG: добавляется в каталог
+// хранилища миграцией migrateBoxStage() (server.js) уже после пересчёта часов ×0,66,
+// поэтому часы здесь — окончательные.
+const BOX_CATALOG = [
+  { id: 'cbox1', stage: 'box', group: '', name: 'Обновление модулей коробочного портала без оптимизации базы данных', description: '', hoursExecutor: 2, hoursClient: 2 },
+  { id: 'cbox2', stage: 'box', group: '', name: 'Обновление модулей коробочного портала с оптимизацией базы данных', description: '', hoursExecutor: 3, hoursClient: 3 },
+  { id: 'cbox3', stage: 'box', group: '', name: 'Обновление окружения (только для BitrixVM 9) без оптимизации базы данных', description: '', hoursExecutor: 2, hoursClient: 2 },
+  { id: 'cbox4', stage: 'box', group: '', name: 'Обновление окружения (только для BitrixVM 9) с оптимизацией базы данных', description: '', hoursExecutor: 3, hoursClient: 3 },
+  { id: 'cbox5', stage: 'box', group: '', name: 'Полное обновление коробочного портала без оптимизации базы данных', description: '', hoursExecutor: 4, hoursClient: 4 },
+  { id: 'cbox6', stage: 'box', group: '', name: 'Полное обновление коробочного портала с оптимизацией базы данных', description: '', hoursExecutor: 5, hoursClient: 5 },
+  { id: 'cbox7', stage: 'box', group: '', name: 'Разворот коробочной версии портала на уже подготовленной Centos 9, Alma Linux 9, Rocky Linux 9', description: '', hoursExecutor: 10, hoursClient: 10 },
+  { id: 'cbox8', stage: 'box', group: '', name: 'Разворот коробочной версии портала с установкой ОС Centos 9, Alma Linux 9, Rocky Linux 9 (без сетевых настроек)', description: '', hoursExecutor: 12, hoursClient: 12 },
+  { id: 'cbox9', stage: 'box', group: '', name: 'Разворот коробочной версии портала на других ОС (с установкой и без) (без сетевых настроек)', description: '', hoursExecutor: 15, hoursClient: 15 },
+  { id: 'cbox10', stage: 'box', group: '', name: 'Перенос коробочного портала с BitrixVM 7 на BitrixVM 9', description: '', hoursExecutor: 15, hoursClient: 15 },
+];
+
 function defaultStages() {
   return STAGES.map((s) => ({ code: s.code, on: s.defaultOn, order: s.order }));
 }
@@ -735,4 +752,4 @@ const DEMO_DEALS = {
   6: [{ id: 7570, title: 'Разработка смарт-процессов' }],
 };
 
-module.exports = { COUNTRIES, STAGES, CATALOG, DEMO_COMPANIES, DEMO_DEALS, seedStore, defaultStages, nid };
+module.exports = { COUNTRIES, STAGES, CATALOG, BOX_CATALOG, DEMO_COMPANIES, DEMO_DEALS, seedStore, defaultStages, nid };

@@ -6,7 +6,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS } = require('./seed');
+const { seedStore, defaultStages, nid, DEMO_COMPANIES, DEMO_DEALS, STAGES, BOX_CATALOG } = require('./seed');
 const { recalc, hoursPerDayOf } = require('./calc');
 const { buildKP, buildContract } = require('./kp');
 const { parseEstimateFile, sanitizeDraft } = require('./importer');
@@ -270,6 +270,45 @@ function migrateCatalogExecHoursRound() {
   console.log('migrateCatalogExecHoursRound: rounded executor hours for', n, 'catalog items');
 }
 try { migrateCatalogExecHoursRound(); } catch (e) { console.error('migrateCatalogExecHoursRound failed:', e && e.message); }
+
+// Этапы сметы приводим к справочнику store.stages: недостающие добавляем выключенными,
+// порядок берём из справочника. Включённые этапы и их взаимный порядок не меняются.
+function ensureDraftStages(d) {
+  if (!d || !Array.isArray(d.stages)) return false;
+  let changed = false;
+  for (const def of (store.stages || [])) {
+    let st = d.stages.find((x) => x.code === def.code);
+    if (!st) { st = { code: def.code, on: false, order: def.order }; d.stages.push(st); changed = true; }
+    if (st.order !== def.order) { st.order = def.order; changed = true; }
+  }
+  return changed;
+}
+
+// Разовая миграция: блок «Разворот/обновления коробочного портала» — второй этап
+// (после «Предпроектного исследования»), его услуги — в каталог, этап — во все сметы.
+function migrateBoxStage() {
+  const KEY = 'boxStage';
+  store.migrations = Array.isArray(store.migrations) ? store.migrations : [];
+  if (store.migrations.includes(KEY)) return;
+  store.stages = Array.isArray(store.stages) ? store.stages : [];
+  const def = STAGES.find((x) => x.code === 'box');
+  if (!store.stages.some((x) => x.code === 'box')) store.stages.push({ ...def });
+  // порядок: «Предпроектное исследование», «Разворот…», затем остальные в прежнем порядке
+  const rest = store.stages.filter((x) => x.code !== 'preresearch' && x.code !== 'box').sort((a, b) => a.order - b.order);
+  const ordered = [store.stages.find((x) => x.code === 'preresearch'), store.stages.find((x) => x.code === 'box'), ...rest].filter(Boolean);
+  ordered.forEach((x, i) => { x.order = i + 1; });
+  store.stages = ordered;
+  store.catalog = Array.isArray(store.catalog) ? store.catalog : [];
+  for (const c of BOX_CATALOG) if (!store.catalog.some((x) => x.id === c.id)) store.catalog.push({ ...c });
+  for (const e of (store.estimates || [])) {
+    ensureDraftStages(e.draft);
+    for (const v of (e.versions || [])) ensureDraftStages(v.snapshot);
+  }
+  store.migrations.push(KEY);
+  persist();
+  console.log('migrateBoxStage: added stage "box" and', BOX_CATALOG.length, 'catalog items');
+}
+try { migrateBoxStage(); } catch (e) { console.error('migrateBoxStage failed:', e && e.message); }
 
 const findEstimate = (id) => store.estimates.find((e) => e.id === id);
 const country = (id) => store.countries.find((c) => c.id === id);
@@ -738,6 +777,7 @@ async function api(req, res, parts, query) {
       if (item.formula) line.formula = item.formula; // услуга-формула (авто-часы)
       e.draft.lines.push(line);
       // авто-включаем этап услуги, чтобы добавленная строка была видна и редактируема
+      ensureDraftStages(e.draft);
       const st = e.draft.stages.find((s) => s.code === item.stage);
       if (st && !st.on) st.on = true;
       e.updatedAt = new Date().toISOString();
@@ -809,7 +849,7 @@ function estimateServices(e) {
       const h = (r.lineHours && r.lineHours[l.id]) || { exec: Number(l.hoursExecutor) || 0 };
       // часы в строке — на единицу; плановые трудозатраты задачи = часы × количество (как в recalc)
       const qty = l.qty == null ? 1 : Number(l.qty) || 0;
-      out.push({ name: l.name, description: l.description || '', hoursExecutor: h.exec * qty });
+      out.push({ name: l.name, description: l.description || '', hoursExecutor: h.exec * qty, stage: s.code });
     });
   });
   return { services: out, computed: r };
@@ -889,11 +929,14 @@ async function launchProject(e, form) {
   const planIso = planDate.toISOString();
   for (const svc of services) {
     try {
+      // «Разворот/обновления коробочного портала»: постановщик — создатель сметы
+      // (если неизвестен — запускающий), исполнитель — Полина Базар.
+      const isBox = svc.stage === 'box';
       const t = await vibeData('POST', '/tasks', {
         title: `${e.title}: ${svc.name}`,
         description: svc.description,
-        responsibleId: USERS.nastasya,
-        createdBy: USERS.polina,
+        responsibleId: isBox ? USERS.polina : USERS.nastasya,
+        createdBy: isBox ? (Number(e.createdById) || launcher) : USERS.polina,
         timeEstimate: Math.round((svc.hoursExecutor || 0) * 3600),
         deadline: planIso,
         groupId: groupId || undefined,
