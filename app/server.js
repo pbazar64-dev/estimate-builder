@@ -829,6 +829,44 @@ async function api(req, res, parts, query) {
 // Список услуг сметы для задач (кроме «Управление проектом»), с эффективными часами.
 // Для блока «Настройка штатного функционала» (setup) — одна общая задача,
 // плановые часы = подытог часов исполнителя по блоку (без управления проектом).
+// Текстовый список услуг этапа для описания задачи. Группы — подзаголовками, их пункты — с отступом.
+// withHours: добавить часы исполнителя (часы × количество) и итог по этапу.
+const fmtNum = (n) => String(Math.round((Number(n) || 0) * 100) / 100).replace('.', ',');
+function stageServicesText(e, r, code, withHours) {
+  const lines = e.draft.lines.filter((l) => l.stage === code && !/^управление проектом/i.test(l.name || ''));
+  const item = (l, indent) => {
+    const qty = l.qty == null ? 1 : Number(l.qty) || 0;
+    const h = (r.lineHours && r.lineHours[l.id]) || { exec: Number(l.hoursExecutor) || 0 };
+    let t = `${indent}• ${l.name} — кол-во: ${fmtNum(qty)}`;
+    if (withHours) t += `, часы исполнителя: ${fmtNum(h.exec * qty)}`;
+    return t;
+  };
+  const out = [];
+  for (const l of lines.filter((x) => !x.parentId)) {
+    if (l.isGroup) {
+      const kids = lines.filter((x) => x.parentId === l.id && !x.isGroup);
+      if (!kids.length) continue;
+      out.push(`${l.name}:`);
+      kids.forEach((k) => out.push(item(k, '   ')));
+    } else out.push(item(l, ''));
+  }
+  if (withHours && out.length) {
+    const pm = (r.stagePM && r.stagePM[code]) || { itemsExec: 0 };
+    out.push('', `Итого часов исполнителя: ${fmtNum(pm.itemsExec)}`);
+  }
+  return out.join('\n');
+}
+
+// Полный список услуг сметы по включённым этапам — для задачи «взять в работу».
+function allServicesText(e, r) {
+  const title = (code) => ((store.stages || []).find((x) => x.code === code) || {}).title || code;
+  return e.draft.stages.filter((s) => s.on).sort((a, b) => a.order - b.order)
+    .map((s) => ({ s, text: stageServicesText(e, r, s.code, false) }))
+    .filter((x) => x.text)
+    .map((x, i) => `${i + 1}. ${title(x.s.code)}\n${x.text}`)
+    .join('\n\n');
+}
+
 function estimateServices(e) {
   const r = recalc(e.draft, e.rate);
   const out = [];
@@ -839,7 +877,8 @@ function estimateServices(e) {
       if (lines.length || pm.itemsExec) {
         out.push({
           name: 'настройки штатного функционала',
-          description: 'Настройка штатного функционала Битрикс24 по согласованному составу работ сметы.',
+          description: 'Настройка штатного функционала Битрикс24 по согласованному составу работ сметы.\n\n'
+            + 'Состав работ:\n' + stageServicesText(e, r, 'setup', true),
           hoursExecutor: pm.itemsExec,
         });
       }
@@ -911,7 +950,12 @@ async function launchProject(e, form) {
 
   // 3) Задача «…: взять в работу»
   const taskIds = [];
-  const intakeDesc = [form.comment || '', form.contacts ? ('Контактные данные: ' + form.contacts) : ''].filter(Boolean).join('\n\n');
+  const svcList = allServicesText(e, computed);
+  const intakeDesc = [
+    form.comment || '',
+    form.contacts ? ('Контактные данные: ' + form.contacts) : '',
+    svcList ? ('Услуги сметы:\n\n' + svcList) : '',
+  ].filter(Boolean).join('\n\n');
   const intake = await vibeData('POST', '/tasks', {
     title: `${e.title}: взять в работу`,
     responsibleId: USERS.polina,
