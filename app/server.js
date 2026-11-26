@@ -507,12 +507,28 @@ async function api(req, res, parts, query) {
       const stageName = Object.fromEntries(work.map((x) => [x.statusId, x.name]));
       const resp = await vibeRequest('POST', `/items/${SPEC.entityTypeId}/search`, {
         filter: { categoryId: SPEC.categoryId, stageId: work.map((x) => x.statusId) },
-        select: ['id', 'title', 'stageId'], limit: 500, sort: { id: 'desc' },
+        select: ['id', 'title', 'stageId', 'companyId', 'parentId2'], limit: 500, sort: { id: 'desc' },
       });
       if (resp && resp.success === false) throw new Error((resp.error && resp.error.message) || 'vibe error');
       const raw = Array.isArray(resp) ? resp : ((resp && (resp.data || resp.items)) || []);
-      const items = (Array.isArray(raw) ? raw : []).filter((x) => stageName[x.stageId])
-        .map((x) => ({ id: x.id, title: x.title || ('Спецификация #' + x.id), stageName: stageName[x.stageId] }));
+      const list = (Array.isArray(raw) ? raw : []).filter((x) => stageName[x.stageId]);
+      // сделки, привязанные к спецификациям (parentId2): название и компания сделки
+      const dealIds = [...new Set(list.map((x) => Number(x.parentId2)).filter(Boolean))];
+      const deals = {};
+      if (dealIds.length) {
+        try {
+          const dr = await vibeRequest('POST', '/deals/search', { filter: { id: dealIds }, select: ['id', 'title', 'companyId'], limit: 500 });
+          for (const d of pickList(dr)) deals[d.id] = d;
+        } catch (x) { /* без названий сделок */ }
+      }
+      const items = list.map((x) => {
+        const d = deals[Number(x.parentId2)];
+        return {
+          id: x.id, title: x.title || ('Спецификация #' + x.id), stageName: stageName[x.stageId],
+          companyId: Number(x.companyId) || (d && Number(d.companyId)) || null,
+          dealId: Number(x.parentId2) || null, dealTitle: d ? d.title : '',
+        };
+      });
       return sendJSON(res, 200, { source: 'portal', items });
     } catch (err) {
       return sendJSON(res, 200, { source: 'portal', items: [], warning: String(err && err.message) });

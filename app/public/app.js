@@ -369,6 +369,14 @@ async function openWizard(opts) {
   m.innerHTML = `<div class="box"><h3>${imp ? 'Импорт сметы из файла' : 'Новая смета'}</h3>
     ${fileField}
     <div class="field"><label>Название сметы</label><input id="w_title" placeholder="Например: Внедрение Б24 / Настройка HR-блока / Создание дашборда"><div class="sub" style="margin-top:5px">Итоговое название: «Компания — название сметы».</div></div>
+    <div class="field" style="position:relative">
+      <label class="chk"><input type="checkbox" id="w_spec_on"> <span>Привязать к текущей спецификации</span></label>
+      <div id="w_spec_wrap" class="hide" style="margin-top:8px">
+        <input id="w_spec" autocomplete="off" placeholder="Начните вводить название спецификации…">
+        <div id="w_spec_list" class="combo hide"></div>
+        <div class="sub" id="w_spec_hint" style="margin-top:5px">Загрузка спецификаций…</div>
+      </div>
+    </div>
     <div class="field" style="position:relative"><label>Компания <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(обязательно)</span> ${srcNote}</label>
       <input id="w_company" autocomplete="off" placeholder="Начните вводить название компании…">
       <div id="w_company_list" class="combo hide"></div>
@@ -379,14 +387,6 @@ async function openWizard(opts) {
       <input id="w_company_custom" autocomplete="off" placeholder="Введите название компании">
     </div>
     <div class="field"><label>Сделка <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(необязательно)</span></label><select id="w_deal" disabled><option value="">— без привязки к сделке —</option></select></div>
-    <div class="field" style="position:relative">
-      <label class="chk"><input type="checkbox" id="w_spec_on"> <span>Привязать к текущей спецификации</span></label>
-      <div id="w_spec_wrap" class="hide" style="margin-top:8px">
-        <input id="w_spec" autocomplete="off" placeholder="Начните вводить название спецификации…">
-        <div id="w_spec_list" class="combo hide"></div>
-        <div class="sub" id="w_spec_hint" style="margin-top:5px">Загрузка спецификаций…</div>
-      </div>
-    </div>
     <div class="field"><label>Страна расчёта · ставка часа</label><div class="countries" id="w_cnts">${cnts()}</div></div>
     <div class="acts"><button class="btn ghost" id="w_cancel">Отмена</button><button class="btn prim" id="w_ok">Создать →</button></div></div>`;
   document.body.appendChild(m);
@@ -435,7 +435,9 @@ async function openWizard(opts) {
   };
   customInput.oninput = () => { state.companyTitle = customInput.value; };
 
-  async function loadDeals() {
+  let dealsSeq = 0;
+  async function loadDeals(preselect) {
+    const seq = ++dealsSeq;
     if (!state.companyId) {
       dealSel.innerHTML = '<option value="">— без привязки к сделке —</option>';
       dealSel.disabled = true; state.dealId = null; state.dealTitle = ''; return;
@@ -443,10 +445,15 @@ async function openWizard(opts) {
     dealSel.disabled = true; dealSel.innerHTML = '<option>Загрузка…</option>';
     let deals = { items: [] };
     try { deals = await api('/crm/deals?companyId=' + encodeURIComponent(state.companyId)); } catch (e) {}
+    if (seq !== dealsSeq) return; // уже выбрана другая компания
     const opts = ['<option value="">— выберите сделку —</option>']
       .concat((deals.items || []).map(d => `<option value="${esc(d.id)}" data-title="${esc(d.title)}">${esc(d.title)}</option>`));
-    if ((deals.items || []).length === 0) opts.push('<option value="" disabled>у компании нет сделок</option>');
+    if ((deals.items || []).length === 0 && !preselect) opts.push('<option value="" disabled>у компании нет сделок</option>');
+    if (preselect && !(deals.items || []).some(d => Number(d.id) === Number(preselect.id))) {
+      opts.push(`<option value="${esc(preselect.id)}" data-title="${esc(preselect.title || '')}">${esc(preselect.title || ('Сделка #' + preselect.id))}</option>`);
+    }
     dealSel.innerHTML = opts.join(''); dealSel.disabled = false;
+    if (preselect) { dealSel.value = String(preselect.id); dealSel.onchange(); }
   }
   dealSel.onchange = () => { const o = dealSel.selectedOptions[0]; state.dealId = dealSel.value ? Number(dealSel.value) : null; state.dealTitle = o ? (o.dataset.title || '') : ''; };
 
@@ -485,13 +492,48 @@ async function openWizard(opts) {
     const ql = q.trim().toLowerCase();
     const matches = (ql ? specs.filter(x => (x.title + ' #' + x.id).toLowerCase().includes(ql)) : specs).slice(0, 50);
     if (!matches.length) { sList.classList.add('hide'); return; }
-    sList.innerHTML = matches.map(x => `<div class="combo-item" data-id="${esc(x.id)}" data-title="${esc(x.title)}">#${esc(x.id)} · ${esc(x.title)} <span class="sub">— ${esc(x.stageName)}</span></div>`).join('');
+    sList.innerHTML = matches.map(x => `<div class="combo-item" data-id="${esc(x.id)}">#${esc(x.id)} · ${esc(x.title)} <span class="sub">— ${esc(x.stageName)}</span></div>`).join('');
     sList.classList.remove('hide');
     sList.querySelectorAll('.combo-item').forEach(it => it.onmousedown = (ev) => {
       ev.preventDefault();
-      state.spec = { id: Number(it.dataset.id), title: it.dataset.title };
-      sInput.value = '#' + it.dataset.id + ' · ' + it.dataset.title; sList.classList.add('hide');
+      const sp = specs.find(x => String(x.id) === it.dataset.id);
+      state.spec = { id: Number(sp.id), title: sp.title };
+      sInput.value = '#' + sp.id + ' · ' + sp.title; sList.classList.add('hide');
+      fillFromSpec(sp);
     });
+  }
+  // Компания и сделка из спецификации. Компании нет в спецификации — подбираем по названию
+  // спецификации («Компания — …»), если в списке портала ровно одно совпадение.
+  const normCo = (t) => String(t || '').toLowerCase().replace(/[«»"'“”„]/g, ' ')
+    .replace(/(^|\s)(ооо|оао|зао|пао|ао|тоо|ип|чуп|уп|оду|сооо|иооо|чп|llp|llc|ltd)(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
+  function companyByName(specTitle) {
+    const head = normCo(String(specTitle || '').split(/\s[—–-]\s|\s\(/)[0]);
+    if (!head) return null;
+    const exact = all.filter(c => normCo(c.title) === head);
+    return exact.length === 1 ? exact[0] : null;
+  }
+  function fillFromSpec(sp) {
+    // компания/сделка, подставленные из прошлой выбранной спецификации, сбрасываем
+    if (state.fromSpec && !absentBox.checked && state.companyTitle === cInput.value) {
+      state.companyId = null; state.companyTitle = ''; cInput.value = ''; loadDeals();
+    }
+    state.fromSpec = false;
+    let co = sp.companyId ? (all.find(c => Number(c.id) === Number(sp.companyId)) || { id: sp.companyId, title: 'Компания #' + sp.companyId }) : null;
+    const byName = !co && (co = companyByName(sp.title));
+    const deal = sp.dealId ? { id: sp.dealId, title: sp.dealTitle } : null;
+    if (co) {
+      if (absentBox.checked) { absentBox.checked = false; absentBox.onchange(); }
+      state.companyId = Number(co.id); state.companyTitle = co.title; cInput.value = co.title;
+      loadDeals(deal); state.fromSpec = true;
+    } else if (deal) {
+      ++dealsSeq; state.fromSpec = true;
+      dealSel.innerHTML = `<option value="${esc(deal.id)}" data-title="${esc(deal.title || '')}">${esc(deal.title || ('Сделка #' + deal.id))}</option>`;
+      dealSel.disabled = false; dealSel.value = String(deal.id); dealSel.onchange();
+    }
+    const what = [co ? 'компания' : '', deal ? 'сделка' : ''].filter(Boolean);
+    $('#w_spec_hint').textContent = !what.length
+      ? 'В спецификации нет компании и сделки — укажите компанию вручную.'
+      : 'Из спецификации подставлены: ' + what.join(' и ') + (byName ? ' (компания найдена по названию спецификации)' : '') + '. Можно изменить.';
   }
   specOn.onchange = () => {
     specWrap.classList.toggle('hide', !specOn.checked);
