@@ -902,7 +902,7 @@ function estimateServices(e) {
       const pm = (r.stagePM && r.stagePM[s.code]) || { itemsExec: 0 };
       if (lines.length || pm.itemsExec) {
         out.push({
-          name: 'настройки штатного функционала',
+          name: 'Настройки штатного функционала',
           description: 'Настройка штатного функционала Битрикс24 по согласованному составу работ сметы.\n\n'
             + 'Состав работ:\n' + stageServicesText(e, r, 'setup', true),
           hoursExecutor: pm.itemsExec,
@@ -991,6 +991,10 @@ async function launchProject(e, form) {
     if (groupId) { try { await vibeData('PATCH', '/workgroups/' + groupId, { opened: true, visible: true }); } catch (x) { /* не критично */ } }
   }
 
+  // Названия задач: «Название клиента: название задачи». Клиент — компания сметы,
+  // иначе часть названия сметы до « — » (формат «Компания — название сметы»).
+  const client = String(e.company || '').trim() || String(e.title || '').split(' — ')[0].trim() || e.title;
+
   // 3) Задача «…: взять в работу»
   const taskIds = [];
   const svcList = allServicesText(e, computed);
@@ -1001,7 +1005,7 @@ async function launchProject(e, form) {
     svcList ? ('Услуги сметы:\n\n' + svcList) : '',
   ].filter(Boolean).join('\n\n');
   const intake = await vibeData('POST', '/tasks', {
-    title: `${e.title}: взять в работу`,
+    title: `${client}: Взять в работу`,
     responsibleId: USERS.polina,
     createdBy: launcher,
     accomplices: [String(USERS.nastasya)],
@@ -1021,7 +1025,7 @@ async function launchProject(e, form) {
       // (если неизвестен — запускающий), исполнитель — Полина Базар.
       const isBox = svc.stage === 'box';
       const t = await vibeData('POST', '/tasks', {
-        title: `${e.title}: ${svc.name}`,
+        title: `${client}: ${svc.name}`,
         description: svc.description,
         responsibleId: isBox ? USERS.polina : USERS.nastasya,
         createdBy: isBox ? (Number(e.createdById) || launcher) : USERS.polina,

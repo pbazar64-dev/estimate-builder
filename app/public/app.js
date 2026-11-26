@@ -679,7 +679,7 @@ async function viewCard(id) {
         <div style="display:flex;justify-content:space-between"><span class="sub">Срок реализации</span><span class="tnum co">${r.durationDays} дн. · ${r.hoursPerDay} ч/день</span></div>
         <hr class="hair">
         <button class="btn prim" id="editBtn">Открыть конструктор</button>
-        ${e.versions.length ? '<button class="btn" id="launchBtn" style="background:var(--ok);border-color:var(--ok);color:#fff">🚀 Запустить проект</button>' : ''}
+        ${e.versions.length ? '<button class="btn" id="launchBtn" style="background:var(--ok);border-color:var(--ok);color:#fff">🚀 Запустить в работу</button>' : ''}
         ${e.launch && e.launch.specUrl ? `<a class="link" href="${esc(e.launch.specUrl)}" target="_blank" style="text-align:center">Спецификация #${esc(e.launch.specId)} · задач: ${e.launch.tasksCreated}</a>` : ''}
       </div>
     </div>
@@ -738,7 +738,7 @@ async function openLaunchModal(e) {
   const intro = ls
     ? `Доп. смета: новая спецификация не создаётся. Задачи по услугам сметы будут привязаны к спецификации <a class="link" href="${portalBase()}/crm/type/1040/details/${esc(ls.id)}/" target="_blank" rel="noopener">#${esc(ls.id)}${ls.title ? ' «' + esc(ls.title) + '»' : ''} ↗</a>.`
     : 'Будет создан элемент смарт-процесса «Спецификации», группа-проект и задачи по услугам сметы.';
-  m.innerHTML = `<div class="box" style="width:min(560px,94vw)"><h3>Запустить проект</h3>
+  m.innerHTML = `<div class="box" style="width:min(560px,94vw)"><h3>Запустить в работу</h3>
     <div class="sub" style="margin-bottom:14px">${intro}</div>
     <div id="lm_load" class="sub">Загрузка справочников портала…</div>
     <div id="lm_form" class="hide">
@@ -749,7 +749,7 @@ async function openLaunchModal(e) {
       <div class="field"><label>Проект (папка)</label><select id="lm_project"></select></div>
       <label style="display:flex;gap:8px;align-items:center;margin:6px 0 4px;cursor:pointer"><input type="checkbox" id="lm_newfolder"> <span>Создать новую папку проекта</span></label>
     </div>
-    <div class="acts"><button class="btn ghost" id="lm_cancel">Отмена</button><button class="btn prim" id="lm_ok" disabled>🚀 Запустить проект</button></div></div>`;
+    <div class="acts"><button class="btn ghost" id="lm_cancel">Отмена</button><button class="btn prim" id="lm_ok" disabled>🚀 Запустить в работу</button></div></div>`;
   document.body.appendChild(m);
   $('#lm_cancel').onclick = () => m.remove();
   m.onclick = (ev) => { if (ev.target === m) m.remove(); };
@@ -775,8 +775,8 @@ async function openLaunchModal(e) {
       author: author(),
     };
     const res = await api('/estimates/' + e.id + '/launch', { method: 'POST', body: JSON.stringify(body) });
-    if (res && res.error) { toast('Ошибка запуска: ' + (res.message || res.error)); $('#lm_ok').disabled = false; $('#lm_ok').textContent = '🚀 Запустить проект'; return; }
-    m.remove(); toast(`Проект запущен: ${res.linked ? 'задачи привязаны к спецификации' : 'спецификация'} #${res.specId}, задач ${res.tasksCreated}`
+    if (res && res.error) { toast('Ошибка запуска: ' + (res.message || res.error)); $('#lm_ok').disabled = false; $('#lm_ok').textContent = '🚀 Запустить в работу'; return; }
+    m.remove(); toast(`Запущено в работу: ${res.linked ? 'задачи привязаны к спецификации' : 'спецификация'} #${res.specId}, задач ${res.tasksCreated}`
       + (res.linked && !res.timelineComment ? '. Комментарий в таймлайн спецификации добавить не удалось' : '')); viewCard(e.id);
   };
 }
