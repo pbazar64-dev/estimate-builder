@@ -393,6 +393,7 @@ function estimateSummary(e) {
     hoursClient: r.hoursClient, hoursExecutor: r.hoursExecutor,
     createdAt: e.createdAt, updatedAt: e.updatedAt,
     createdBy: e.createdBy, updatedBy: e.updatedBy,
+    linkedSpec: e.linkedSpec || null,
   };
 }
 
@@ -496,6 +497,27 @@ async function api(req, res, parts, query) {
   }
 
   // GET /api/crm/deals?companyId=
+  // GET /api/crm/specs — спецификации (смарт-процесс 1040, воронка SPEC.categoryId) на рабочих
+  // стадиях: стадии без semantics (S — успех, F — провал исключаем). Для «доп. сметы».
+  if (method === 'GET' && parts[1] === 'crm' && parts[2] === 'specs') {
+    if (!CRM_LIVE) return sendJSON(res, 200, { source: 'demo', items: [] });
+    try {
+      const st = await vibeData('GET', `/statuses?entityId=${SPEC.stageEntityId}&limit=100`);
+      const work = (Array.isArray(st) ? st : (st.items || [])).filter((x) => !x.semantics);
+      const stageName = Object.fromEntries(work.map((x) => [x.statusId, x.name]));
+      const resp = await vibeRequest('POST', `/items/${SPEC.entityTypeId}/search`, {
+        filter: { categoryId: SPEC.categoryId, stageId: work.map((x) => x.statusId) },
+        select: ['id', 'title', 'stageId'], limit: 500, sort: { id: 'desc' },
+      });
+      if (resp && resp.success === false) throw new Error((resp.error && resp.error.message) || 'vibe error');
+      const raw = Array.isArray(resp) ? resp : ((resp && (resp.data || resp.items)) || []);
+      const items = (Array.isArray(raw) ? raw : []).filter((x) => stageName[x.stageId])
+        .map((x) => ({ id: x.id, title: x.title || ('Спецификация #' + x.id), stageName: stageName[x.stageId] }));
+      return sendJSON(res, 200, { source: 'portal', items });
+    } catch (err) {
+      return sendJSON(res, 200, { source: 'portal', items: [], warning: String(err && err.message) });
+    }
+  }
   if (method === 'GET' && parts[1] === 'crm' && parts[2] === 'deals') {
     const companyId = Number(query.companyId);
     if (!companyId) return sendJSON(res, 200, { source: CRM_LIVE ? 'portal' : 'demo', items: [] });
@@ -594,6 +616,10 @@ async function api(req, res, parts, query) {
         createdAt: now, updatedAt: now, createdBy: who, createdById: whoId, updatedBy: who,
         draft: { stages: defaultStages(), lines: [] }, versions: [],
       };
+      // доп. смета к существующей спецификации: при запуске задачи привязываются к ней
+      if (b.linkedSpec && Number(b.linkedSpec.id)) {
+        e.linkedSpec = { id: Number(b.linkedSpec.id), title: String(b.linkedSpec.title || '').slice(0, 500) };
+      }
       // импорт из файла: разобранный черновик сразу сохраняется версией v1 (можно запускать проект)
       if (b.draft) {
         const d = sanitizeDraft(b.draft, store.stages);
@@ -826,9 +852,6 @@ async function api(req, res, parts, query) {
   return sendJSON(res, 404, { error: 'unknown endpoint' });
 }
 
-// Список услуг сметы для задач (кроме «Управление проектом»), с эффективными часами.
-// Для блока «Настройка штатного функционала» (setup) — одна общая задача,
-// плановые часы = подытог часов исполнителя по блоку (без управления проектом).
 // Текстовый список услуг этапа для описания задачи. Группы — подзаголовками, их пункты — с отступом.
 // withHours: добавить часы исполнителя (часы × количество) и итог по этапу.
 const fmtNum = (n) => String(Math.round((Number(n) || 0) * 100) / 100).replace('.', ',');
@@ -867,6 +890,9 @@ function allServicesText(e, r) {
     .join('\n\n');
 }
 
+// Список услуг сметы для задач (кроме «Управление проектом»), с эффективными часами.
+// Для блока «Настройка штатного функционала» (setup) — одна общая задача,
+// плановые часы = подытог часов исполнителя по блоку (без управления проектом).
 function estimateServices(e) {
   const r = recalc(e.draft, e.rate);
   const out = [];
@@ -901,30 +927,35 @@ async function launchProject(e, form) {
   // запускающий = авторизованный в Б24 пользователь (иначе — владелец ключа)
   const launcher = (form.author && form.author.id) ? Number(form.author.id) : USERS.andrey;
 
-  // 1) Элемент смарт-процесса «Спецификации» (1040)
-  const observers = [USERS.andrey];
-  if (e.countryId === 'ru' || e.countryId === 'kz') observers.push(USERS.sergey);
-  const fields = {
-    title: e.title,
-    categoryId: SPEC.categoryId,
-    assignedById: USERS.polina,
-    observers,
-    [SPEC.analystField]: USERS.nastasya,
-    [SPEC.hoursClientField]: computed.hoursClient,
-    [SPEC.hoursExecutorField]: computed.hoursExecutor,
-    [SPEC.totalField]: Math.round(computed.total),
-    [SPEC.durationField]: computed.durationDays,
-    [SPEC.startDateField]: iso(today),
-    [SPEC.planDateField]: iso(planDate),
-  };
-  if (form.stageId) fields.stageId = form.stageId;
-  if (form.license) fields[SPEC.licenseField] = form.license;
-  if (form.comment) fields[SPEC.commentField] = form.comment;
-  if (COUNTRY_ENUM[e.countryId]) fields[SPEC.countryField] = COUNTRY_ENUM[e.countryId];
-  if (e.companyId) fields.companyId = e.companyId;
-  const specItem = await vibeData('POST', '/items/1040', fields);
-  const si = (specItem && specItem.item) ? specItem.item : specItem;
-  const specId = (si && (si.id != null ? si.id : si.ID)) || null;
+  // 1) Элемент смарт-процесса «Спецификации» (1040). Для доп. сметы (e.linkedSpec) новый
+  //    элемент не создаём — задачи привязываются к выбранной существующей спецификации.
+  const linked = !!(e.linkedSpec && e.linkedSpec.id);
+  let specId = linked ? Number(e.linkedSpec.id) : null;
+  if (!linked) {
+    const observers = [USERS.andrey];
+    if (e.countryId === 'ru' || e.countryId === 'kz') observers.push(USERS.sergey);
+    const fields = {
+      title: e.title,
+      categoryId: SPEC.categoryId,
+      assignedById: USERS.polina,
+      observers,
+      [SPEC.analystField]: USERS.nastasya,
+      [SPEC.hoursClientField]: computed.hoursClient,
+      [SPEC.hoursExecutorField]: computed.hoursExecutor,
+      [SPEC.totalField]: Math.round(computed.total),
+      [SPEC.durationField]: computed.durationDays,
+      [SPEC.startDateField]: iso(today),
+      [SPEC.planDateField]: iso(planDate),
+    };
+    if (form.stageId) fields.stageId = form.stageId;
+    if (form.license) fields[SPEC.licenseField] = form.license;
+    if (form.comment) fields[SPEC.commentField] = form.comment;
+    if (COUNTRY_ENUM[e.countryId]) fields[SPEC.countryField] = COUNTRY_ENUM[e.countryId];
+    if (e.companyId) fields.companyId = e.companyId;
+    const specItem = await vibeData('POST', '/items/1040', fields);
+    const si = (specItem && specItem.item) ? specItem.item : specItem;
+    specId = (si && (si.id != null ? si.id : si.ID)) || null;
+  }
   // Привязка задач к элементу смарт-процесса «Спецификации» через поле задачи
   // «Элемент CRM» (UF_CRM_TASK). Код привязки для смарт-процесса — это короткий
   // символьный код типа (SYMBOL_CODE_SHORT): префикс 'T' + entityTypeId в
@@ -954,6 +985,7 @@ async function launchProject(e, form) {
   const intakeDesc = [
     form.comment || '',
     form.contacts ? ('Контактные данные: ' + form.contacts) : '',
+    linked ? `Доп. смета к спецификации #${specId}${e.linkedSpec.title ? ' «' + e.linkedSpec.title + '»' : ''}.` : '',
     svcList ? ('Услуги сметы:\n\n' + svcList) : '',
   ].filter(Boolean).join('\n\n');
   const intake = await vibeData('POST', '/tasks', {
@@ -992,7 +1024,7 @@ async function launchProject(e, form) {
   }
 
   return {
-    specId, groupId, groupCreated, taskIds,
+    specId, linked, groupId, groupCreated, taskIds,
     specUrl: specId ? `https://avrika.bitrix24.ru/crm/type/1040/details/${specId}/` : null,
     tasksCreated: taskIds.length,
   };

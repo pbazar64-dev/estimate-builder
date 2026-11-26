@@ -373,12 +373,20 @@ async function openWizard(opts) {
       <input id="w_company" autocomplete="off" placeholder="Начните вводить название компании…">
       <div id="w_company_list" class="combo hide"></div>
       <div class="sub" id="w_company_hint" style="margin-top:5px">Найдено компаний: ${all.length}. Выберите компанию из списка портала.</div>
-      <label style="display:flex;gap:8px;align-items:center;margin:8px 0 0;cursor:pointer;font-size:12px;color:var(--ink-2)"><input type="checkbox" id="w_company_absent"> <span>Компании нет в списке — ввести название вручную</span></label>
+      <label class="chk" style="margin-top:8px;font-size:12px;color:var(--ink-2)"><input type="checkbox" id="w_company_absent"> <span>Компании нет в списке — ввести название вручную</span></label>
     </div>
     <div class="field hide" id="w_company_custom_wrap"><label>Название компании (вручную)</label>
       <input id="w_company_custom" autocomplete="off" placeholder="Введите название компании">
     </div>
     <div class="field"><label>Сделка <span class="sub" style="font-weight:400;text-transform:none;letter-spacing:0">(необязательно)</span></label><select id="w_deal" disabled><option value="">— без привязки к сделке —</option></select></div>
+    <div class="field" style="position:relative">
+      <label class="chk"><input type="checkbox" id="w_spec_on"> <span>Привязать к текущей спецификации</span></label>
+      <div id="w_spec_wrap" class="hide" style="margin-top:8px">
+        <input id="w_spec" autocomplete="off" placeholder="Начните вводить название спецификации…">
+        <div id="w_spec_list" class="combo hide"></div>
+        <div class="sub" id="w_spec_hint" style="margin-top:5px">Загрузка спецификаций…</div>
+      </div>
+    </div>
     <div class="field"><label>Страна расчёта · ставка часа</label><div class="countries" id="w_cnts">${cnts()}</div></div>
     <div class="acts"><button class="btn ghost" id="w_cancel">Отмена</button><button class="btn prim" id="w_ok">Создать →</button></div></div>`;
   document.body.appendChild(m);
@@ -458,9 +466,45 @@ async function openWizard(opts) {
   cInput.onfocus = () => renderList(cInput.value);
   cInput.onblur = () => setTimeout(() => cList.classList.add('hide'), 150);
 
+  // доп. смета: привязка к существующей спецификации на рабочей стадии
+  const specOn = $('#w_spec_on'), specWrap = $('#w_spec_wrap'), sInput = $('#w_spec'), sList = $('#w_spec_list');
+  let specs = null; state.spec = null;
+  async function loadSpecs() {
+    if (specs) return;
+    let r = { items: [] };
+    try { r = await api('/crm/specs'); } catch (x) {}
+    specs = r.items || [];
+    $('#w_spec_hint').textContent = r.source === 'demo'
+      ? 'Спецификации недоступны: нет подключения к порталу.'
+      : (r.warning && !specs.length ? 'Не удалось загрузить спецификации: ' + r.warning
+        : `Спецификаций на рабочих стадиях: ${specs.length}. Выберите из списка.`);
+    if (document.activeElement === sInput) renderSpecs(sInput.value);
+  }
+  function renderSpecs(q) {
+    if (!specs) return;
+    const ql = q.trim().toLowerCase();
+    const matches = (ql ? specs.filter(x => (x.title + ' #' + x.id).toLowerCase().includes(ql)) : specs).slice(0, 50);
+    if (!matches.length) { sList.classList.add('hide'); return; }
+    sList.innerHTML = matches.map(x => `<div class="combo-item" data-id="${esc(x.id)}" data-title="${esc(x.title)}">#${esc(x.id)} · ${esc(x.title)} <span class="sub">— ${esc(x.stageName)}</span></div>`).join('');
+    sList.classList.remove('hide');
+    sList.querySelectorAll('.combo-item').forEach(it => it.onmousedown = (ev) => {
+      ev.preventDefault();
+      state.spec = { id: Number(it.dataset.id), title: it.dataset.title };
+      sInput.value = '#' + it.dataset.id + ' · ' + it.dataset.title; sList.classList.add('hide');
+    });
+  }
+  specOn.onchange = () => {
+    specWrap.classList.toggle('hide', !specOn.checked);
+    if (specOn.checked) { loadSpecs(); sInput.focus(); } else { state.spec = null; sInput.value = ''; }
+  };
+  sInput.oninput = () => { state.spec = null; renderSpecs(sInput.value); };
+  sInput.onfocus = () => renderSpecs(sInput.value);
+  sInput.onblur = () => setTimeout(() => sList.classList.add('hide'), 150);
+
   $('#w_cancel').onclick = () => m.remove();
   m.onclick = (e) => { if (e.target === m) m.remove(); };
   $('#w_ok').onclick = async () => {
+    if (specOn.checked && !state.spec) { toast('Выберите спецификацию из списка или снимите галочку'); sInput.focus(); return; }
     const companyTitle = absentBox.checked
       ? customInput.value.trim()
       : (state.companyTitle || cInput.value.trim());
@@ -473,6 +517,7 @@ async function openWizard(opts) {
     const name = $('#w_title').value.trim() || state.dealTitle || 'Новая смета';
     const title = companyTitle ? (companyTitle + ' — ' + name) : name;
     const body = { title, companyId: state.companyId, company: companyTitle, dealId: state.dealId, dealTitle: state.dealTitle, countryId: sel, author: author() };
+    if (specOn.checked && state.spec) body.linkedSpec = state.spec;
     if (imp) { body.draft = fileState.parsed.draft; body.fileName = fileState.name; }
     const okBtn = $('#w_ok'); okBtn.disabled = true;
     const e = await api('/estimates', { method: 'POST', body: JSON.stringify(body) }).catch(() => ({ error: 'network' }));
@@ -618,6 +663,7 @@ async function viewCard(id) {
       <div class="info"><div class="kv">
         <div class="cell"><div class="k">Сделка</div><div class="val">${dealCell}</div></div>
         <div class="cell"><div class="k">Компания</div><div class="val">${companyCell}</div></div>
+        ${e.linkedSpec && e.linkedSpec.id ? `<div class="cell"><div class="k">Доп. смета к спецификации</div><div class="val"><a class="clink" href="${PB}/crm/type/1040/details/${esc(e.linkedSpec.id)}/" target="_blank" rel="noopener">#${esc(e.linkedSpec.id)}${e.linkedSpec.title ? ' · ' + esc(e.linkedSpec.title) : ''} ↗</a></div></div>` : ''}
         <div class="cell"><div class="k">Контакт</div><div class="val">${esc(e.contact || '—')}</div></div>
         <div class="cell"><div class="k">Ответственный</div><div class="val">${esc(e.responsible)}</div></div>
         <div class="cell"><div class="k">Страна · валюта</div><div class="val">${esc((App.boot.countries.find(c => c.id === e.countryId) || {}).name || '')} · ${esc(e.currency)}</div></div>
@@ -688,12 +734,16 @@ async function viewCard(id) {
 /* ---------- Запуск проекта (смарт-процесс «Спецификации» + группа + задачи) ---------- */
 async function openLaunchModal(e) {
   const m = document.createElement('div'); m.className = 'modal';
+  const ls = e.linkedSpec && e.linkedSpec.id ? e.linkedSpec : null;
+  const intro = ls
+    ? `Доп. смета: новая спецификация не создаётся. Задачи по услугам сметы будут привязаны к спецификации <a class="link" href="${portalBase()}/crm/type/1040/details/${esc(ls.id)}/" target="_blank" rel="noopener">#${esc(ls.id)}${ls.title ? ' «' + esc(ls.title) + '»' : ''} ↗</a>.`
+    : 'Будет создан элемент смарт-процесса «Спецификации», группа-проект и задачи по услугам сметы.';
   m.innerHTML = `<div class="box" style="width:min(560px,94vw)"><h3>Запустить проект</h3>
-    <div class="sub" style="margin-bottom:14px">Будет создан элемент смарт-процесса «Спецификации», группа-проект и задачи по услугам сметы.</div>
+    <div class="sub" style="margin-bottom:14px">${intro}</div>
     <div id="lm_load" class="sub">Загрузка справочников портала…</div>
     <div id="lm_form" class="hide">
-      <div class="field"><label>Лицензия</label><select id="lm_license"></select></div>
-      <div class="field"><label>Стадия спецификации</label><select id="lm_stage"></select></div>
+      <div class="field ${ls ? 'hide' : ''}"><label>Лицензия</label><select id="lm_license"></select></div>
+      <div class="field ${ls ? 'hide' : ''}"><label>Стадия спецификации</label><select id="lm_stage"></select></div>
       <div class="field"><label>Комментарий</label><input id="lm_comment" placeholder="Комментарий к проекту"></div>
       <div class="field"><label>Контактные данные</label><input id="lm_contacts" placeholder="Контакты ответственного со стороны клиента"></div>
       <div class="field"><label>Проект (папка)</label><select id="lm_project"></select></div>
@@ -726,7 +776,7 @@ async function openLaunchModal(e) {
     };
     const res = await api('/estimates/' + e.id + '/launch', { method: 'POST', body: JSON.stringify(body) });
     if (res && res.error) { toast('Ошибка запуска: ' + (res.message || res.error)); $('#lm_ok').disabled = false; $('#lm_ok').textContent = '🚀 Запустить проект'; return; }
-    m.remove(); toast(`Проект запущен: спецификация #${res.specId}, задач ${res.tasksCreated}`); viewCard(e.id);
+    m.remove(); toast(`Проект запущен: ${res.linked ? 'задачи привязаны к спецификации' : 'спецификация'} #${res.specId}, задач ${res.tasksCreated}`); viewCard(e.id);
   };
 }
 

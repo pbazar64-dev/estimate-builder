@@ -138,6 +138,8 @@ th.r,td.r{text-align:right}
 .field label{display:block;font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-2);font-weight:700;margin-bottom:6px}
 .field input,.field select{width:100%;padding:10px 12px;border:1px solid var(--line);background:var(--field);font-family:var(--sans);font-size:14px;color:var(--ink);outline:none}
 .field input:focus,.field select:focus{border-color:var(--ink)}
+.field input[type=checkbox]{width:auto;padding:0;flex:none}
+.field label.chk{display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px;letter-spacing:0;text-transform:none;font-weight:400;color:var(--ink);margin:0}
 .countries{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
 .cnt{border:1px solid var(--line);padding:13px;cursor:pointer}
 .cnt.on{border-color:var(--ink);border-width:2px;padding:12px}
