@@ -968,6 +968,8 @@ async function launchProject(e, form) {
     if (form.comment) fields[SPEC.commentField] = form.comment;
     if (COUNTRY_ENUM[e.countryId]) fields[SPEC.countryField] = COUNTRY_ENUM[e.countryId];
     if (e.companyId) fields.companyId = e.companyId;
+    // сделка сметы → родительская сделка спецификации (поле «Сделка», parentId2)
+    if (e.dealId) fields.parentId2 = Number(e.dealId);
     const specItem = await vibeData('POST', '/items/1040', fields);
     const si = (specItem && specItem.item) ? specItem.item : specItem;
     specId = (si && (si.id != null ? si.id : si.ID)) || null;
