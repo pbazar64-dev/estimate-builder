@@ -776,7 +776,8 @@ async function openLaunchModal(e) {
     };
     const res = await api('/estimates/' + e.id + '/launch', { method: 'POST', body: JSON.stringify(body) });
     if (res && res.error) { toast('Ошибка запуска: ' + (res.message || res.error)); $('#lm_ok').disabled = false; $('#lm_ok').textContent = '🚀 Запустить проект'; return; }
-    m.remove(); toast(`Проект запущен: ${res.linked ? 'задачи привязаны к спецификации' : 'спецификация'} #${res.specId}, задач ${res.tasksCreated}`); viewCard(e.id);
+    m.remove(); toast(`Проект запущен: ${res.linked ? 'задачи привязаны к спецификации' : 'спецификация'} #${res.specId}, задач ${res.tasksCreated}`
+      + (res.linked && !res.timelineComment ? '. Комментарий в таймлайн спецификации добавить не удалось' : '')); viewCard(e.id);
   };
 }
 

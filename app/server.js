@@ -962,6 +962,18 @@ async function launchProject(e, form) {
   // ШЕСТНАДЦАТЕРИЧНОМ виде, а НЕ в десятичном. Напр. 1040 → 0x410 → 'T410'.
   // Десятичное 'T1040' — некорректный код, Битрикс24 молча его отбрасывает,
   // и спецификация не прикрепляется к задаче.
+  // Доп. смета: комментарий в таймлайн выбранной спецификации с часами и суммой
+  // (поля спецификации не меняем). Сбой комментария запуск не прерывает.
+  let timelineComment = false;
+  if (linked) {
+    const money = (n) => String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    const comment = `Добавлен доп.счет. ${e.title}. Часы исполнителя: ${fmtNum(computed.hoursExecutor)}. `
+      + `Часы клиенту: ${fmtNum(computed.hoursClient)}. Сумма счета: ${money(computed.total)} ${e.currency || ''}`.trim();
+    try {
+      await vibeData('POST', '/timelines', { entityType: 'DYNAMIC_' + SPEC.entityTypeId, entityId: specId, comment });
+      timelineComment = true;
+    } catch (x) { console.error('timeline comment failed:', x && x.message); }
+  }
   const specAbbr = 'T' + Number(SPEC.entityTypeId).toString(16); // 1040 → 'T410'
   const crmBind = specId ? [specAbbr + '_' + specId] : undefined;
 
@@ -1024,7 +1036,7 @@ async function launchProject(e, form) {
   }
 
   return {
-    specId, linked, groupId, groupCreated, taskIds,
+    specId, linked, timelineComment, groupId, groupCreated, taskIds,
     specUrl: specId ? `https://avrika.bitrix24.ru/crm/type/1040/details/${specId}/` : null,
     tasksCreated: taskIds.length,
   };
